@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zapqio.dev/protocol/v1/schemas.json",
+  "title": "Zapqio Runner Protocol — v1",
+  "description": "Schemas for the WebSocket messages exchanged between Zapqio Web (server) and a Runner (client). IMPORTANT: the envelope's `data` field is a STRING containing the JSON-encoded payload (double-encoding). These $defs describe the DECODED payloads; parse `data` as JSON before validating it against the payload schema matching `type`. See PROTOCOL.md.",
+  "$defs": {
+    "message": {
+      "title": "Message — the envelope of every frame",
+      "type": "object",
+      "required": ["type", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "title": "Message type",
+          "enum": ["Info", "Job", "JobReturn", "Log"]
+        },
+        "data": {
+          "title": "JSON-encoded payload (double-encoded), or null",
+          "type": ["string", "null"],
+          "description": "A JSON document encoded as a string. Decode it, then validate against: Info -> $defs/messageInfo; Job (web->runner) -> $defs/messageJob; JobReturn -> $defs/messageJobReturn; Log -> $defs/messageLog. Null only for a Job poll (runner->web)."
+        }
+      }
+    },
+    "messageInfo": {
+      "title": "Info payload (runner->web)",
+      "type": "object",
+      "required": ["name", "methods"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "description": "Runner name (same as X-Zapqio-Name)." },
+        "methods": { "type": "array", "items": { "$ref": "#/$defs/messageMethod" } }
+      }
+    },
+    "messageMethod": {
+      "title": "A method the runner exposes",
+      "type": "object",
+      "required": ["name", "in", "out"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "in": { "type": ["string", "null"], "description": "JSON Schema of the method input, carried as a string. May be null." },
+        "out": { "type": ["string", "null"], "description": "JSON Schema of the method output, carried as a string. May be null." }
+      }
+    },
+    "messageJob": {
+      "title": "Job dispatch payload (web->runner)",
+      "type": "object",
+      "required": ["id", "name", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "name": { "type": "string", "description": "Method name to execute (matches a messageMethod.name)." },
+        "data": { "type": ["string", "null"], "description": "Job input as a JSON string (matches the method's `in` schema). May be empty or null." }
+      }
+    },
+    "messageJobReturn": {
+      "title": "Job result payload (runner->web)",
+      "type": "object",
+      "required": ["id", "status", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "status": { "enum": ["OK", "ERROR"] },
+        "data": { "type": ["string", "null"], "description": "On OK: job output as a JSON string (matches the method's `out` schema). On ERROR: null." }
+      }
+    },
+    "messageLog": {
+      "title": "Log payload (runner->web)",
+      "type": "object",
+      "required": ["jobId", "level", "message", "date"],
+      "additionalProperties": false,
+      "properties": {
+        "jobId": { "type": "string", "format": "uuid" },
+        "level": { "enum": ["Info", "Error"] },
+        "message": { "type": "string" },
+        "date": { "type": "string", "format": "date-time", "description": "ISO-8601 timestamp with timezone offset." }
+      }
+    }
+  }
+}

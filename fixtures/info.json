@@ -1,0 +1,4 @@
+{
+  "type": "Info",
+  "data": "{\"name\":\"build-agent-01\",\"methods\":[{\"name\":\"resize-image\",\"in\":\"{\\\"type\\\":\\\"object\\\",\\\"properties\\\":{\\\"width\\\":{\\\"type\\\":\\\"integer\\\"},\\\"height\\\":{\\\"type\\\":\\\"integer\\\"}}}\",\"out\":null}]}"
+}
