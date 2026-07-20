@@ -32,19 +32,14 @@ boundary**:
    (e.g. decorators + a JSON-Schema generator). The .NET `IRunnerMethod` / assembly-loading model
    does **not** travel; modules are per-language.
 
-```
- Runner (client)                                  Web (server)
-      |   ── WebSocket upgrade: GET /ws-runner ──────>   | 101 (or 401/400)
-      |        headers: X-Zapqio-Token, X-Zapqio-Name    |
-      |                                                   |
-      |   ── Info (methods + name) ───────────────────>  |  (stores methods)
-      |                                                   |
-      |   <─────────────────────── Job (dispatch) ─────  |  (server pushes work)
-      |   ── Log … Log … ─────────────────────────────>  |  (streamed while running)
-      |   ── JobReturn (OK/ERROR + output) ───────────>  |  (stores result, pipes to next step)
-      |   ── Job (poll, data=null) ───────────────────>  |  ("give me more")
-      |                                                   |
-```
+| Sender | Receiver | Message / Action | Details & Server Behavior |
+|---|---|---|---|
+| **Runner** | **Web** | WebSocket upgrade (`GET /ws-runner`) | Sends headers: `X-Zapqio-Token`, `X-Zapqio-Name`. Returns code `101` (or errors `401`/`400`). |
+| **Runner** | **Web** | `Info` (methods + name) | Server stores the provided methods. |
+| **Web** | **Runner** | `Job` (dispatch) | Server actively pushes new work to the runner. |
+| **Runner** | **Web** | `Log ... Log ...` | Logs are streamed live while the job is running. |
+| **Runner** | **Web** | `JobReturn` (OK/ERROR + output) | Server stores the result and pipes it to the next step. |
+| **Runner** | **Web** | `Job` (poll, `data=null`) | Client signals readiness with a "give me more" message. |
 
 ---
 

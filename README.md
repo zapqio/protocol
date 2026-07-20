@@ -7,6 +7,7 @@ conforming to it.
 | File | Purpose |
 | --- | --- |
 | [`PROTOCOL.md`](./PROTOCOL.md) | The normative specification — **read this first**. |
+| [`PROTOCOL.pl.md`](./PROTOCOL.pl.md) | Polish translation of the specification. Non-normative — `PROTOCOL.md` wins on any disagreement. |
 | [`schemas.json`](./schemas.json) | JSON Schema (Draft 2020-12) for the envelope and all payloads. |
 | [`fixtures/`](./fixtures/) | Canonical example messages used as cross-language conformance vectors. |
 
