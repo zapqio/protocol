@@ -183,9 +183,20 @@ Streamed while a job runs. Payload — `MessageLog`:
 - `message` — log text.
 - `date`    — ISO-8601 timestamp with timezone offset (§7).
 
-The **first** `Log` for a job flips it from *Waiting* to *Executing* on the server. The reference
-runner captures the method's `stdout`→`Info` and `stderr`→`Error`, plus a start line and any
-exception; entries are flushed on a ~2 s timer, **one WS message per entry**.
+The **first** `Log` for a job flips it from *Dispatched* to *Executing* on the server. That
+transition is what makes a lost job recoverable: if a runner disconnects without sending
+`JobReturn`, a job still in *Dispatched* is taken to have never started and is returned to the
+queue, while one already in *Executing* is failed instead of re-run — its side effect may have
+happened.
+
+A runner therefore MUST send a start-line `Log` **before** invoking the method, and MUST send it
+immediately rather than through its log buffer. A runner that buffers the start line can perform a
+side effect and then crash before the next flush; the job stays in *Dispatched* and Web will execute
+it a second time.
+
+The reference runner captures the method's `stdout`→`Info` and `stderr`→`Error`, plus that start
+line and any exception. The start line is sent synchronously, before the call; the remaining entries
+are flushed on a ~2 s timer, **one WS message per entry**.
 
 ### 5.4 JobReturn (R→W)
 

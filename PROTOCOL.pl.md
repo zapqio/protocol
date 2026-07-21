@@ -193,10 +193,20 @@ Strumieniowane w trakcie wykonywania zadania. Ładunek — `MessageLog`:
 - `message` — treść logu.
 - `date`    — znacznik czasu ISO-8601 z przesunięciem strefy czasowej (§7).
 
-**Pierwszy** `Log` dla zadania przełącza je po stronie serwera ze stanu *Waiting* na *Executing*.
-Runner referencyjny przechwytuje `stdout` metody→`Info` oraz `stderr`→`Error`, a także wiersz
-startowy i ewentualny wyjątek; wpisy są opróżniane z kolejki na timerze co ok. 2 s, **jedna
-wiadomość WS na wpis**.
+**Pierwszy** `Log` dla zadania przełącza je po stronie serwera ze stanu *Dispatched* na *Executing*.
+To przejście decyduje o tym, jak odzyskiwane jest zadanie utracone: jeśli runner rozłączy się bez
+wysłania `JobReturn`, zadanie wciąż w stanie *Dispatched* uznaje się za nierozpoczęte i wraca ono do
+kolejki, natomiast zadanie już w *Executing* kończy się błędem zamiast zostać uruchomione ponownie —
+jego efekt uboczny mógł już nastąpić.
+
+Runner MUSI zatem wysłać wiersz startowy `Log` **przed** wywołaniem metody i MUSI wysłać go
+natychmiast, z pominięciem swojego bufora logów. Runner, który buforuje wiersz startowy, może wykonać
+efekt uboczny i ulec awarii przed kolejnym opróżnieniem kolejki; zadanie zostanie wtedy w stanie
+*Dispatched*, a Web wykona je po raz drugi.
+
+Runner referencyjny przechwytuje `stdout` metody→`Info` oraz `stderr`→`Error`, a także ów wiersz
+startowy i ewentualny wyjątek. Wiersz startowy jest wysyłany synchronicznie, przed wywołaniem;
+pozostałe wpisy są opróżniane z kolejki na timerze co ok. 2 s, **jedna wiadomość WS na wpis**.
 
 ### 5.4 JobReturn (R→W)
 
