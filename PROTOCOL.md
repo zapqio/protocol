@@ -81,6 +81,25 @@ Zachowanie serwera:
   `X-Zapqio-Protocol-Version: <wersja serwera>`); wersja niebędąca liczbą całkowitą → HTTP **400**.
 - W pozostałych przypadkach → **101 Switching Protocols**.
 
+Kolejność, w jakiej serwer sprawdza te warunki — negocjacja wersji wypada przed wyszukaniem tokenu,
+więc runner mówiący niewspieraną wersją zostaje odprawiony, zanim Web sięgnie po dane runnerów:
+
+```mermaid
+flowchart TD
+    A["GET /ws-runner"] --> B{"Żądanie upgrade WebSocket?"}
+    B -- "nie" --> R400["400 Bad Request"]
+    B -- "tak" --> C{"Token i Name obecne i niepuste?"}
+    C -- "nie" --> R401["401 Unauthorized"]
+    C -- "tak" --> F{"X-Zapqio-Protocol-Version"}
+    F -- "wartość niecałkowita" --> R400
+    F -- "różna od wersji serwera" --> R426["426 Upgrade Required<br/>X-Zapqio-Protocol-Version: wersja serwera"]
+    F -- "brak (przyjmij 1) lub równa" --> D{"Token pasuje do jakiegoś runnera?"}
+    D -- "nie" --> R401
+    D -- "tak" --> E{"Nazwa zgodna z powiązaną?"}
+    E -- "nie" --> R401
+    E -- "tak lub pierwsze połączenie (wiąże nazwę)" --> OK["101 Switching Protocols"]
+```
+
 Uwagi:
 
 - **Token jest tożsamością i sekretem**; **nazwa jest stabilną etykietą**. Wybierz nazwę raz i
@@ -236,14 +255,69 @@ Runner nie może więc zakładać, że `JobReturn`, który udało mu się wypchn
 uwzględniony, a ponowne wysłanie wyniku po wznowieniu połączenia nie odzyskuje zadania, które Web
 już odpisał.
 
-### 5.5 Typowa wymiana (jedno zadanie)
+Cykl życia zadania po stronie Web, złożony z reguł §5.2–5.4. Etykiety stanów to wartości
+`RunnerJobStatus` wraz z numerem, pod którym są utrwalane:
 
+```mermaid
+stateDiagram-v2
+    state "Waiting = 0" as Waiting
+    state "Dispatched = 1" as Dispatched
+    state "Executing = 2" as Executing
+    state "Ok = 3" as Ok
+    state "Error = 4" as Error
+
+    [*] --> Waiting
+    Waiting --> Dispatched: Web wypycha Job (dyspozytor, co ok. 10 s)
+    Dispatched --> Executing: pierwszy Log dla zadania
+    Dispatched --> Waiting: runner rozłączony / nierozpoczęte, wraca do kolejki
+    Executing --> Error: runner rozłączony / efekt uboczny mógł już nastąpić
+    Executing --> Ok: JobReturn ze status OK
+    Executing --> Error: JobReturn ze status ERROR
+    Dispatched --> Ok: JobReturn bez logu startowego (runner łamie §5.3)
+    Dispatched --> Error: JobReturn bez logu startowego (runner łamie §5.3)
+    Ok --> [*]
+    Error --> [*]
+
+    note right of Dispatched
+        Web nie sprawdza, czy runner jest zajęty.
+        Przydział odrzucony przez połączonego runnera
+        nie ma limitu czasu i nic go nie wyśle ponownie.
+
+        Okno przyjęcia wyniku to Dispatched LUB Executing,
+        więc runner, który pominął log startowy, kończy
+        zadanie wprost stąd. Runner zgodny ze specyfikacją
+        nigdy tędy nie idzie.
+    end note
+
+    note right of Error
+        JobReturn dla zadania, które Web już odpisał,
+        jest odrzucany ze śladem w logu.
+        Pipeline nie posuwa się przez niego dalej.
+    end note
 ```
-W→R  Job        { id: J, name: "resize-image", data: "{…wejście…}" }
-R→W  Log        { jobId: J, level: Info,  message: "Run Job: …" }
-R→W  Log        { jobId: J, level: Info,  message: "…wyjście metody…" }
-R→W  JobReturn  { id: J, status: OK, data: "{…wyjście…}" }
-R→W  Job        null                              # odpytanie o kolejne zadanie
+
+### 5.5 Typowa wymiana (połączenie i jedno zadanie)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant R as Runner (klient WS)
+    participant W as Web (serwer WS)
+
+    R->>W: GET /ws-runner<br/>X-Zapqio-Token, X-Zapqio-Name, X-Zapqio-Protocol-Version
+    W-->>R: 101 Switching Protocols
+    R->>W: Info { name, methods[] }
+    Note over W: Web zapisuje metody runnera
+
+    W->>R: Job { id: J, name: resize-image, data }
+    activate R
+    R->>W: Log { jobId: J, level: Info, Run Job... }
+    Note over W: Dispatched przechodzi w Executing
+    R->>W: Log { jobId: J, level: Info, wyjście metody }
+    R->>W: JobReturn { id: J, status: OK, data }
+    deactivate R
+    R->>W: Job (data = null)
+    Note over R,W: odpytanie: jestem wolny, przyślij pracę
 ```
 
 ---
