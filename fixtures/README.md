@@ -1,30 +1,32 @@
-# Conformance fixtures
+# Fixture'y zgodności
 
-Each `*.json` file here is **one exact WebSocket text frame** — the literal bytes a conformant
-implementation sends or accepts. Because the envelope's `data` field is a JSON string (see
-[`../PROTOCOL.md` §4](../PROTOCOL.md#4-envelope)), the encoding is visible as escaped quotes inside
-`data` — that is intentional, it is what the gotchas look like in practice.
+Każdy plik `*.json` w tym katalogu to **jedna dokładna tekstowa ramka WebSocket** — dosłowne bajty,
+które zgodna implementacja wysyła albo przyjmuje. Ponieważ pole `data` koperty jest ciągiem znaków
+JSON (zob. [`../PROTOCOL.md` §4](../PROTOCOL.md#4-koperta)), kodowanie widać jako wyescape'owane
+cudzysłowy wewnątrz `data` — tak ma być, dokładnie tak wyglądają w praktyce opisane pułapki.
 
-A cross-language conformance test SHOULD, for every fixture:
+Międzyjęzykowy test zgodności POWINIEN dla każdego fixture'a:
 
-1. **Consume:** parse the frame, then parse `data`, then (for jobs/results) parse the nested job
-   I/O, and check the fully-decoded content equals the **Decoded** column below.
-2. **Produce:** build the same logical message and check it re-encodes to a frame that is
-   **semantically equal** to the fixture (deep-equal after decoding — whitespace and key order are
-   not significant; see [`../PROTOCOL.md` §10](../PROTOCOL.md#10-conformance)).
+1. **Skonsumować:** sparsować ramkę, potem `data`, a potem (dla zadań i wyników) zagnieżdżone
+   wejście/wyjście zadania, i sprawdzić, że w pełni zdekodowana treść równa się kolumnie
+   **Znaczenie po zdekodowaniu** poniżej.
+2. **Wyprodukować:** zbudować tę samą wiadomość logicznie i sprawdzić, że koduje się z powrotem do
+   ramki **semantycznie równej** fixture'owi (głęboka równość po zdekodowaniu — białe znaki i
+   kolejność kluczy nie mają znaczenia; zob.
+   [`../PROTOCOL.md` §10](../PROTOCOL.md#10-zgodność-ze-specyfikacją)).
 
-All fixtures share one coherent example: runner `build-agent-01`, method `resize-image`, job
-`a1b2c3d4-e5f6-7890-abcd-ef1234567890`.
+Wszystkie fixture'y należą do jednego spójnego przykładu: runner `build-agent-01`, metoda
+`resize-image`, zadanie `a1b2c3d4-e5f6-7890-abcd-ef1234567890`.
 
-| Fixture | Dir | Decoded meaning |
+| Fixture | Kier. | Znaczenie po zdekodowaniu |
 | --- | --- | --- |
-| `info.json` | R→W | Runner announces name `build-agent-01` and one method `resize-image` with an input JSON Schema and `out: null`. |
-| `job-poll.json` | R→W | Poll: `type=Job`, `data=null` ("send me work"). |
-| `job-dispatch.json` | W→R | Dispatch job `a1b2…` → method `resize-image`, input `{ "width": 800, "height": 600 }`. |
-| `log-info.json` | R→W | Info log for job `a1b2…`: `"Run Job: 2026-06-12T14:30:00"`. |
-| `log-error.json` | R→W | Error log for job `a1b2…`: `"Main exception: boom"`. |
-| `job-return-ok.json` | R→W | Result for job `a1b2…`: `OK`, output `{ "url": "https://cdn.example.com/out/123.png" }`. |
-| `job-return-error.json` | R→W | Result for job `a1b2…`: `ERROR`, `data=null`. |
+| `info.json` | R→W | Runner ogłasza nazwę `build-agent-01` i jedną metodę `resize-image` ze schematem JSON wejścia oraz `out: null`. |
+| `job-poll.json` | R→W | Odpytanie: `type=Job`, `data=null` („przyślij mi pracę”). |
+| `job-dispatch.json` | W→R | Przydział zadania `a1b2…` → metoda `resize-image`, wejście `{ "width": 800, "height": 600 }`. |
+| `log-info.json` | R→W | Log poziomu Info dla zadania `a1b2…`: `"Run Job: 2026-06-12T14:30:00"`. |
+| `log-error.json` | R→W | Log poziomu Error dla zadania `a1b2…`: `"Main exception: boom"`. |
+| `job-return-ok.json` | R→W | Wynik zadania `a1b2…`: `OK`, wyjście `{ "url": "https://cdn.example.com/out/123.png" }`. |
+| `job-return-error.json` | R→W | Wynik zadania `a1b2…`: `ERROR`, `data=null`. |
 
-Decoding `job-dispatch.json` step by step is worked through in
-[`../PROTOCOL.md` §8](../PROTOCOL.md#8-worked-example--bytes-on-the-wire).
+Dekodowanie `job-dispatch.json` krok po kroku jest rozpisane w
+[`../PROTOCOL.md` §8](../PROTOCOL.md#8-przykład-krok-po-kroku--bajty-na-łączu).

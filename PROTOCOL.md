@@ -1,124 +1,130 @@
-# Zapqio Runner Protocol — v1 (Draft)
+# Protokół Zapqio Runner — v1 (wersja robocza)
 
-This is the **source of truth** for the wire protocol between the Zapqio **Web** server and a
-**Runner**. Any runner — in any language — that conforms to this document can connect to Web.
+> **Uwaga.** Nazwy pól, nagłówków HTTP, typów wiadomości i wartości wyliczeń **nie są tłumaczone** —
+> na łączu występują dokładnie w formie podanej w tym dokumencie.
 
-This version is *descriptive*: it documents the behaviour of the reference .NET implementation as of
-2026-06-12. The reference binding lives in `Zapqio.Protocol`; §11
-maps every rule below to the code that implements it, so the spec can be re-verified.
+To jest **źródło prawdy** dla protokołu komunikacji między serwerem **Web** Zapqio a **Runnerem**.
+Każdy runner — w dowolnym języku — który jest zgodny z tym dokumentem, może połączyć się z Web.
 
-The key words MUST, MUST NOT, SHOULD and MAY are used in the RFC 2119 sense.
+Ta wersja ma charakter *opisowy*: dokumentuje zachowanie referencyjnej implementacji .NET wg stanu na
+2026-07-31. §11 mapuje każdą regułę z tego dokumentu na kod, który ją realizuje, dzięki czemu
+specyfikację można ponownie zweryfikować.
+
+Słowa kluczowe MUSI, NIE WOLNO, POWINIEN oraz MOŻE są używane w rozumieniu RFC 2119 i odpowiadają
+angielskim MUST, MUST NOT, SHOULD i MAY.
 
 ---
 
-## 1. Overview
+## 1. Przegląd
 
-A **Runner** is a WebSocket **client**. **Web** is the WebSocket **server**. The runner connects,
-authenticates with HTTP headers, announces the methods it can execute, then receives jobs, executes
-them, streams logs, and returns results. Every application message is a JSON text frame sharing a
-common [envelope](#4-envelope).
+**Runner** jest **klientem** WebSocket. **Web** jest **serwerem** WebSocket. Runner nawiązuje
+połączenie, uwierzytelnia się nagłówkami HTTP, ogłasza metody, które potrafi wykonać, a następnie
+odbiera zadania, wykonuje je, strumieniuje logi i zwraca wyniki. Każda wiadomość aplikacyjna to
+tekstowa ramka JSON o wspólnej [kopercie](#4-koperta).
 
-Web is **agnostic** to how a runner executes a job or what language it is written in. It routes jobs
-by `(runner, method name)` and treats each job's input and output as an **opaque string**. Runners
-may therefore be heterogeneous: a single pipeline can have steps executed by different runners in
-different languages.
+Web jest **agnostyczny** wobec tego, jak runner wykonuje zadanie ani w jakim języku jest napisany.
+Kieruje zadania według pary `(runner, nazwa metody)` i traktuje wejście oraz wyjście każdego zadania
+jako **nieprzezroczysty ciąg znaków**. Runnery mogą być więc niejednorodne: jeden pipeline może mieć
+kroki wykonywane przez różne runnery napisane w różnych językach.
 
-A complete runner implementation is three layers, but **only the first crosses the language
-boundary**:
+Kompletna implementacja runnera to trzy warstwy, ale **tylko pierwsza przekracza granicę języka**:
 
-1. **The protocol** — this document. (Reimplement in your language.)
-2. **The host** — the connection lifecycle, the job loop, the log queue, dispatch-by-method-name.
-3. **A module model** — how *your* language defines and executes methods. This is yours to design
-   (e.g. decorators + a JSON-Schema generator). The .NET `IRunnerMethod` / assembly-loading model
-   does **not** travel; modules are per-language.
+1. **Protokół** — ten dokument. (Do zaimplementowania ponownie w Twoim języku.)
+2. **Host** — cykl życia połączenia, pętla zadań, kolejka logów, kierowanie po nazwie metody.
+3. **Model modułów** — sposób, w jaki *Twój* język definiuje i wykonuje metody. To projektujesz sam
+   (np. dekoratory + generator JSON Schema). Model .NET oparty na `IRunnerMethod` i ładowaniu
+   assembly **nie jest przenośny**; moduły są specyficzne dla języka.
 
-| Sender | Receiver | Message / Action | Details & Server Behavior |
+
+| Nadawca | Odbiorca | Komunikat / Akcja | Szczegóły i zachowanie serwera |
 |---|---|---|---|
-| **Runner** | **Web** | WebSocket upgrade (`GET /ws-runner`) | Sends headers: `X-Zapqio-Token`, `X-Zapqio-Name`. Returns code `101` (or errors `401`/`400`). |
-| **Runner** | **Web** | `Info` (methods + name) | Server stores the provided methods. |
-| **Web** | **Runner** | `Job` (dispatch) | Server actively pushes new work to the runner. |
-| **Runner** | **Web** | `Log ... Log ...` | Logs are streamed live while the job is running. |
-| **Runner** | **Web** | `JobReturn` (OK/ERROR + output) | Server stores the result and pipes it to the next step. |
-| **Runner** | **Web** | `Job` (poll, `data=null`) | Client signals readiness with a "give me more" message. |
+| **Runner** | **Web** | Nawiązanie połączenia (`GET /ws-runner`) | Przesyła nagłówki: `X-Zapqio-Token`, `X-Zapqio-Name`. Zwraca kod `101` (lub błędy `400`/`401`/`426` — §3). |
+| **Runner** | **Web** | `Info` (metody + nazwa) | Serwer rejestruje u siebie przesłane metody. |
+| **Web** | **Runner** | `Job` (przydział) | Serwer aktywnie wypycha nowe zadanie do wykonania. |
+| **Runner** | **Web** | `Log ... Log ...` | Strumieniowanie logów na żywo w trakcie wykonywania zadania. |
+| **Runner** | **Web** | `JobReturn` (OK/ERROR + wynik) | Serwer zapisuje wynik i podaje go do kolejnego kroku. |
+| **Runner** | **Web** | `Job` (odpytanie, `data=null`) | Klient zgłasza gotowość komunikatem „daj mi więcej pracy”. |
+
 
 ---
 
-## 2. Transport & framing
+## 2. Transport i ramkowanie
 
-- **WebSocket** (RFC 6455). Endpoint: `GET {baseUrl}/ws-runner` with the standard upgrade, where
-  `{baseUrl}` is the Web origin (e.g. `wss://zapqio.example.com`).
-- Application messages are **text** frames, **UTF-8**, each a single JSON object (the envelope).
-  Implementations MUST reassemble continuation frames until FIN before parsing.
-- Server maximum message size: **32 MiB** (33 554 432 bytes). A larger message is closed with WS
-  status **1009** (Message Too Big).
-- No application-level compression or batching.
+- **WebSocket** (RFC 6455). Punkt końcowy: `GET {baseUrl}/ws-runner` ze standardowym upgrade, gdzie
+  `{baseUrl}` to origin serwera Web (np. `wss://zapqio.example.com`).
+- Wiadomości aplikacyjne to ramki **tekstowe**, **UTF-8**, każda będąca pojedynczym obiektem JSON
+  (kopertą). Implementacje MUSZĄ scalać ramki kontynuacyjne aż do FIN przed parsowaniem.
+- Maksymalny rozmiar wiadomości po stronie serwera: **32 MiB** (33 554 432 bajty). Większa wiadomość
+  powoduje zamknięcie połączenia ze statusem WS **1009** (Message Too Big).
+- Brak kompresji i grupowania (batching) na poziomie aplikacji.
 
 ---
 
-## 3. Handshake & authentication
+## 3. Uzgadnianie połączenia i uwierzytelnianie
 
-On the upgrade request the runner MUST send two headers:
+W żądaniu upgrade runner MUSI wysłać dwa nagłówki:
 
-| Header | Meaning |
+| Nagłówek | Znaczenie |
 | --- | --- |
-| `X-Zapqio-Token` | Secret runner token, in plaintext. Web verifies it against stored Argon2 hashes. |
-| `X-Zapqio-Name`  | The runner's stable, self-assigned name (from its config/env). |
-| `X-Zapqio-Protocol-Version` | The protocol **major version** the runner speaks (e.g. `1`). Optional for now; a missing header is treated as `1`. |
+| `X-Zapqio-Token` | Sekretny token runnera, jawnym tekstem. Web weryfikuje go wobec zapisanych skrótów Argon2. |
+| `X-Zapqio-Name`  | Stabilna, samodzielnie nadana nazwa runnera (z konfiguracji/zmiennej środowiskowej). |
+| `X-Zapqio-Protocol-Version` | **Główna** wersja protokołu, którą mówi runner (np. `1`). Na razie opcjonalny; brak nagłówka jest traktowany jak `1`. |
 
-Server behaviour:
+Zachowanie serwera:
 
-- Request to `/ws-runner` that is **not** a WebSocket upgrade → HTTP **400**.
-- Either header missing/empty → HTTP **401**.
-- Token matching **no** runner → HTTP **401**.
-- **Name binding:** the first time a runner connects, Web binds `X-Zapqio-Name` to that runner
-  record. On later connects the name MUST equal the bound name, otherwise → HTTP **401**.
-- Unsupported protocol version → HTTP **426 Upgrade Required** (response carries
-  `X-Zapqio-Protocol-Version: <server version>`); a non-integer version → HTTP **400**.
-- Otherwise → **101 Switching Protocols**.
+- Żądanie do `/ws-runner`, które **nie** jest upgrade WebSocket → HTTP **400**.
+- Brakujący lub pusty którykolwiek z nagłówków → HTTP **401**.
+- Token niepasujący do **żadnego** runnera → HTTP **401**.
+- **Powiązanie nazwy:** przy pierwszym połączeniu Web wiąże `X-Zapqio-Name` z rekordem runnera. Przy
+  kolejnych połączeniach nazwa MUSI być równa nazwie powiązanej, w przeciwnym razie → HTTP **401**.
+- Nieobsługiwana wersja protokołu → HTTP **426 Upgrade Required** (odpowiedź niesie
+  `X-Zapqio-Protocol-Version: <wersja serwera>`); wersja niebędąca liczbą całkowitą → HTTP **400**.
+- W pozostałych przypadkach → **101 Switching Protocols**.
 
-Notes:
+Uwagi:
 
-- The **token is the identity & secret**; the **name is a stable label**. Pick a name once and keep
-  it stable. (The reference runner reads `ZAPQIO_NAME`, or generates a UUID and persists it to a
-  `##Name` file if none is configured.)
-- **Protocol version** is negotiated by the `X-Zapqio-Protocol-Version` header (an integer major
-  version). A **missing** header → assumed `1` (the pre-versioning baseline); a **non-integer** →
-  HTTP 400; a value the server does **not** support → **426 Upgrade Required**, with the server's
-  version echoed in an `X-Zapqio-Protocol-Version` response header. The major version is bumped only
-  on a breaking change (§9).
+- **Token jest tożsamością i sekretem**; **nazwa jest stabilną etykietą**. Wybierz nazwę raz i
+  utrzymuj ją niezmienną. (Runner referencyjny odczytuje `ZAPQIO_NAME`, a jeśli nic nie
+  skonfigurowano, generuje UUID i zapisuje go trwale do pliku `##Name`.)
+- **Wersja protokołu** jest negocjowana nagłówkiem `X-Zapqio-Protocol-Version` (całkowita wersja
+  główna). **Brak** nagłówka → przyjmuje się `1` (poziom bazowy sprzed wersjonowania); wartość
+  **niecałkowita** → HTTP 400; wartość, której serwer **nie** obsługuje → **426 Upgrade Required**,
+  z wersją serwera odesłaną w nagłówku odpowiedzi `X-Zapqio-Protocol-Version`. Wersja główna jest
+  podnoszona wyłącznie przy zmianie łamiącej zgodność (§9).
 
 ---
 
-## 4. Envelope
+## 4. Koperta
 
-Every WebSocket message is exactly this object:
+Każda wiadomość WebSocket to dokładnie taki obiekt:
 
 ```json
 { "type": "Job", "data": "…" }
 ```
 
-- **`type`** *(string, required)* — the message type: one of `Info`, `Job`, `JobReturn`, `Log`.
-  Exact casing in §6.
-- **`data`** *(string or null, required)* — the payload for that type, **JSON-encoded as a string**.
-  The payload object is serialized to JSON and that JSON *text* is placed in `data` as a string
-  value. `null` only for the [Job poll](#52-job).
+- **`type`** *(string, wymagane)* — typ wiadomości: jeden z `Info`, `Job`, `JobReturn`, `Log`.
+  Dokładna wielkość liter w §6.
+- **`data`** *(string lub null, wymagane)* — ładunek dla danego typu, **zakodowany jako JSON w
+  postaci ciągu znaków**. Obiekt ładunku jest serializowany do JSON, a ten *tekst* JSON trafia do
+  `data` jako wartość tekstowa. `null` wyłącznie dla [odpytania Job](#52-job).
 
-> **⚠ GOTCHA — double encoding.** `data` is a **string**, not a nested object. To **read** a
-> message: parse the envelope, then parse `data` *again* as JSON. To **write** one: serialize the
-> payload to a string and assign it to `data`. Worked bytes in §8.
+> **⚠ PUŁAPKA — podwójne kodowanie.** `data` jest **ciągiem znaków**, a nie zagnieżdżonym obiektem.
+> Aby **odczytać** wiadomość: sparsuj kopertę, a następnie sparsuj `data` *ponownie* jako JSON. Aby
+> **zapisać**: zserializuj ładunek do ciągu znaków i przypisz go do `data`. Rozpisane bajty w §8.
 
-All object property names are **camelCase** (`type`, `data`, `id`, `name`, `jobId`, `level`, …).
+Wszystkie nazwy właściwości obiektów są w **camelCase** (`type`, `data`, `id`, `name`, `jobId`,
+`level`, …).
 
 ---
 
-## 5. Messages & flow
+## 5. Wiadomości i przepływ
 
-Direction legend: **R→W** runner→web, **W→R** web→runner.
+Legenda kierunków: **R→W** runner→web, **W→R** web→runner.
 
 ### 5.1 Info (R→W)
 
-Sent **once**, right after the first successful connect. Announces the runner's name and the methods
-it exposes. Payload — `MessageInfo`:
+Wysyłane **raz**, zaraz po pierwszym udanym połączeniu. Ogłasza nazwę runnera oraz metody, które
+udostępnia. Ładunek — `MessageInfo`:
 
 ```json
 {
@@ -129,45 +135,56 @@ it exposes. Payload — `MessageInfo`:
 }
 ```
 
-- `name` — runner name (same value as `X-Zapqio-Name`).
-- `methods` — array of `MessageMethod`:
-  - `name` — method name; jobs are routed to it by this name.
-  - `in`  — a **JSON Schema** describing the method **input**, carried *as a string*, or `null`.
-  - `out` — a **JSON Schema** describing the method **output**, carried *as a string*, or `null`.
+- `name` — nazwa runnera (ta sama wartość co `X-Zapqio-Name`).
+- `methods` — tablica obiektów `MessageMethod`:
+  - `name` — nazwa metody; zadania są do niej kierowane po tej nazwie.
+  - `in`  — **JSON Schema** opisujący **wejście** metody, przenoszony *jako ciąg znaków*, albo `null`.
+  - `out` — **JSON Schema** opisujący **wyjście** metody, przenoszony *jako ciąg znaków*, albo `null`.
 
-Web stores the method list; the UI uses `in`/`out` to render and validate pipeline job I/O. The
-reference runner sends `Info` once per process; **re-send `Info` if your method set changes** (e.g.
-after a reconnect with a different module set).
+Web zapisuje listę metod; interfejs użytkownika używa `in`/`out` do renderowania i walidacji wejścia
+oraz wyjścia zadań w pipeline. Runner referencyjny wysyła `Info` raz na proces; **wyślij `Info`
+ponownie, jeśli zmieni się zestaw metod** (np. po ponownym połączeniu z innym zestawem modułów).
 
 ### 5.2 Job
 
-`Job` is **overloaded by direction**:
+`Job` jest **przeciążony kierunkiem**:
 
-- **Poll (R→W):** the envelope `{ "type": "Job", "data": null }`. Means *"I am free, send me work."*
-  If Web has nothing to dispatch it sends nothing back.
-- **Dispatch (W→R):** payload — `MessageJob`:
+- **Odpytanie (R→W):** koperta `{ "type": "Job", "data": null }`. Oznacza *„jestem wolny, przyślij mi
+  pracę”*. Jeśli Web nie ma nic do przydzielenia, nie odsyła nic.
+- **Przydział (W→R):** ładunek — `MessageJob`:
 
   ```json
   { "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "name": "resize-image", "data": "{\"width\":800}" }
   ```
 
-  - `id`   — the job's unique id; echo it in `Log` and `JobReturn`.
-  - `name` — which method to run (matches a `MessageMethod.name`).
-  - `data` — the job **input**: itself a JSON string (matching the method's `in` schema), possibly
-    empty.
+  - `id`   — unikalny identyfikator zadania; odeślij go w `Log` i `JobReturn`.
+  - `name` — która metoda ma zostać uruchomiona (pasuje do `MessageMethod.name`).
+  - `data` — **wejście** zadania: samo w sobie ciąg znaków JSON (zgodny ze schematem `in` metody),
+    możliwe że pusty.
 
-> **⚠ GOTCHA — triple nesting.** `envelope.data` is a string containing `MessageJob` JSON, and
-> `MessageJob.data` is *itself* a string containing the job-input JSON. Two levels of
-> string-encoding on top of the frame.
+> **⚠ PUŁAPKA — potrójne zagnieżdżenie.** `envelope.data` jest ciągiem znaków zawierającym JSON
+> obiektu `MessageJob`, a `MessageJob.data` jest *znowu* ciągiem znaków zawierającym JSON wejścia
+> zadania. To dwa poziomy kodowania tekstowego ponad samą ramką.
 
-**Kickstart & cadence.** After `Info`, the runner blocks on receive; the **first** job arrives from
-Web's background dispatcher (~every 10 s). The runner executes **one job at a time** and, after each
-job finishes, sends a **Job poll** to pull the next. A dispatch that arrives while a job is already
-running MAY be ignored by the runner (the reference runner drops it).
+**Rozruch i kadencja.** Po `Info` runner blokuje się na odbiorze; **pierwsze** zadanie przychodzi z
+dyspozytora działającego w tle po stronie Web, który rusza 30 s po starcie Web, a potem chodzi co
+ok. 10 s. Runner wykonuje **jedno zadanie naraz** i po zakończeniu każdego zadania wysyła
+**odpytanie Job**, aby pobrać kolejne.
+
+Web przydziela zadania na tym timerze, nie sprawdzając, czy runner jest zajęty, więc przydział MOŻE
+nadejść, gdy runner wciąż pracuje nad poprzednim zadaniem. Runnerowi **NIE WOLNO** go odrzucić —
+musi zakolejkować go u siebie i wykonać, gdy zwolni się miejsce. Przydzielone zadanie jest już
+zarezerwowane po stronie serwera (jest w stanie *Dispatched*, §5.3), a Web zwraca takie zadanie do
+kolejki dopiero wtedy, gdy zniknie połączenie runnera; dla zadania przydzielonego runnerowi, który
+pozostaje połączony, nie ma żadnego limitu czasu. Przydział odrzucony przez połączonego runnera
+zostaje więc porzucony — nic go nie wyśle ponownie, nic go nie zakończy błędem, a on blokuje resztę
+swojego uruchomienia pipeline'u. Runner referencyjny przestaje czytać gniazdo na czas wykonywania
+metody, więc przydział, który nadejdzie w międzyczasie, czeka w buforze gniazda i zostaje wykonany,
+gdy runner się zwolni.
 
 ### 5.3 Log (R→W)
 
-Streamed while a job runs. Payload — `MessageLog`:
+Strumieniowane w trakcie wykonywania zadania. Ładunek — `MessageLog`:
 
 ```json
 {
@@ -178,145 +195,164 @@ Streamed while a job runs. Payload — `MessageLog`:
 }
 ```
 
-- `jobId`   — the job this log line belongs to.
-- `level`   — `Info` or `Error` (§6).
-- `message` — log text.
-- `date`    — ISO-8601 timestamp with timezone offset (§7).
+- `jobId`   — zadanie, do którego należy dany wpis logu.
+- `level`   — `Info` albo `Error` (§6).
+- `message` — treść logu.
+- `date`    — znacznik czasu ISO-8601 z przesunięciem strefy czasowej (§7).
 
-The **first** `Log` for a job flips it from *Dispatched* to *Executing* on the server. That
-transition is what makes a lost job recoverable: if a runner disconnects without sending
-`JobReturn`, a job still in *Dispatched* is taken to have never started and is returned to the
-queue, while one already in *Executing* is failed instead of re-run — its side effect may have
-happened.
+**Pierwszy** `Log` dla zadania przełącza je po stronie serwera ze stanu *Dispatched* na *Executing*.
+To przejście decyduje o tym, jak odzyskiwane jest zadanie utracone: jeśli runner rozłączy się bez
+wysłania `JobReturn`, zadanie wciąż w stanie *Dispatched* uznaje się za nierozpoczęte i wraca ono do
+kolejki, natomiast zadanie już w *Executing* kończy się błędem zamiast zostać uruchomione ponownie —
+jego efekt uboczny mógł już nastąpić.
 
-A runner therefore MUST send a start-line `Log` **before** invoking the method, and MUST send it
-immediately rather than through its log buffer. A runner that buffers the start line can perform a
-side effect and then crash before the next flush; the job stays in *Dispatched* and Web will execute
-it a second time.
+Runner MUSI zatem wysłać wiersz startowy `Log` **przed** wywołaniem metody i MUSI wysłać go
+natychmiast, z pominięciem swojego bufora logów. Runner, który buforuje wiersz startowy, może wykonać
+efekt uboczny i ulec awarii przed kolejnym opróżnieniem kolejki; zadanie zostanie wtedy w stanie
+*Dispatched*, a Web wykona je po raz drugi.
 
-The reference runner captures the method's `stdout`→`Info` and `stderr`→`Error`, plus that start
-line and any exception. The start line is sent synchronously, before the call; the remaining entries
-are flushed on a ~2 s timer, **one WS message per entry**.
+Runner referencyjny przechwytuje `stdout` metody→`Info` oraz `stderr`→`Error`, a także ów wiersz
+startowy i ewentualny wyjątek. Wiersz startowy jest wysyłany synchronicznie, przed wywołaniem;
+pozostałe wpisy są opróżniane z kolejki na timerze co ok. 2 s, **jedna wiadomość WS na wpis**.
 
 ### 5.4 JobReturn (R→W)
 
-Sent **once** when a job finishes. Payload — `MessageJobReturn`:
+Wysyłane **raz**, gdy zadanie się zakończy. Ładunek — `MessageJobReturn`:
 
 ```json
 { "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "status": "OK", "data": "{\"url\":\"…\"}" }
 ```
 
-- `id`     — the job id.
-- `status` — `OK` or `ERROR` (§6).
-- `data`   — on `OK`: the job **output** (a JSON string matching `out`), which Web feeds as the
-  **input of the next pipeline step**. On `ERROR`: `null`.
+- `id`     — identyfikator zadania.
+- `status` — `OK` albo `ERROR` (§6).
+- `data`   — przy `OK`: **wyjście** zadania (ciąg znaków JSON zgodny z `out`), które Web podaje jako
+  **wejście kolejnego kroku pipeline**. Przy `ERROR`: `null`.
 
-### 5.5 Typical exchange (one job)
+Web przyjmuje wynik tylko wtedy, gdy zadanie jest wciąż w stanie *Dispatched* albo *Executing*, i
+tylko od tego runnera, któremu je przydzielono. Wynik zadania, na którym Web już postawił krzyżyk —
+zakolejkowanego ponownie albo zakończonego błędem z powodu utraty runnera (§5.3) — zostaje
+**odrzucony**, ze śladem w logu zadania; uruchomienie pipeline'u nie posuwa się przez niego dalej.
+Runner nie może więc zakładać, że `JobReturn`, który udało mu się wypchnąć na łącze, został
+uwzględniony, a ponowne wysłanie wyniku po wznowieniu połączenia nie odzyskuje zadania, które Web
+już odpisał.
+
+### 5.5 Typowa wymiana (jedno zadanie)
 
 ```
-W→R  Job        { id: J, name: "resize-image", data: "{…input…}" }
+W→R  Job        { id: J, name: "resize-image", data: "{…wejście…}" }
 R→W  Log        { jobId: J, level: Info,  message: "Run Job: …" }
-R→W  Log        { jobId: J, level: Info,  message: "…method output…" }
-R→W  JobReturn  { id: J, status: OK, data: "{…output…}" }
-R→W  Job        null                              # poll for the next job
+R→W  Log        { jobId: J, level: Info,  message: "…wyjście metody…" }
+R→W  JobReturn  { id: J, status: OK, data: "{…wyjście…}" }
+R→W  Job        null                              # odpytanie o kolejne zadanie
 ```
 
 ---
 
-## 6. Enumerations (exact wire values)
+## 6. Wyliczenia (dokładne wartości na łączu)
 
-Enums are serialized as their **exact names** — the reference uses a string enum converter with **no
-naming policy**, so values are **PascalCase / uppercase, NOT camelCase**. Producers MUST emit
-exactly these strings:
+Wyliczenia są serializowane jako ich **dokładne nazwy** — implementacja referencyjna używa konwertera
+wyliczeń na ciągi znaków **bez polityki nazewnictwa**, więc wartości są w **PascalCase / wielkimi
+literami, a NIE w camelCase**. Producenci MUSZĄ emitować dokładnie te ciągi:
 
-| Field | Allowed values |
+| Pole | Dozwolone wartości |
 | --- | --- |
-| message `type`     | `Info`, `Job`, `JobReturn`, `Log` |
-| Log `level`        | `Info`, `Error` |
-| JobReturn `status` | `OK`, `ERROR` |
+| `type` wiadomości  | `Info`, `Job`, `JobReturn`, `Log` |
+| `level` w Log      | `Info`, `Error` |
+| `status` w JobReturn | `OK`, `ERROR` |
 
-The reference .NET *deserializer* happens to accept other casing and integer values on read, but a
-conformant producer MUST emit exactly the strings above and MUST NOT emit integers.
+Referencyjny *deserializator* .NET akceptuje przy odczycie także inną wielkość liter oraz wartości
+całkowite, ale zgodny producent MUSI emitować dokładnie powyższe ciągi i NIE WOLNO mu emitować
+liczb całkowitych.
 
 ---
 
-## 7. Scalar formats
+## 7. Formaty skalarne
 
-| Logical type | Wire format | Example |
+| Typ logiczny | Format na łączu | Przykład |
 | --- | --- | --- |
-| uuid (`id`, `jobId`) | canonical hyphenated, lowercase UUID string | `"a1b2c3d4-e5f6-7890-abcd-ef1234567890"` |
-| timestamp (`date`)   | ISO-8601 with timezone offset; fractional seconds optional | `"2026-06-12T14:30:00.123+00:00"` |
-| JSON Schema (`in`, `out`) | a JSON Schema document carried **as a string** | `"{\"type\":\"object\", … }"` |
-| job input/output (`data` of `MessageJob`/`MessageJobReturn`) | opaque JSON carried **as a string**; shape defined per method by `in`/`out`, not by this protocol | `"{\"width\":800}"` |
+| uuid (`id`, `jobId`) | kanoniczny UUID z myślnikami, małymi literami | `"a1b2c3d4-e5f6-7890-abcd-ef1234567890"` |
+| znacznik czasu (`date`) | ISO-8601 z przesunięciem strefy czasowej; ułamki sekund opcjonalne | `"2026-06-12T14:30:00.123+00:00"` |
+| JSON Schema (`in`, `out`) | dokument JSON Schema przenoszony **jako ciąg znaków** | `"{\"type\":\"object\", … }"` |
+| wejście/wyjście zadania (`data` w `MessageJob`/`MessageJobReturn`) | nieprzezroczysty JSON przenoszony **jako ciąg znaków**; kształt definiowany per metoda przez `in`/`out`, a nie przez ten protokół | `"{\"width\":800}"` |
 
 ---
 
-## 8. Worked example — bytes on the wire
+## 8. Przykład krok po kroku — bajty na łączu
 
-A **Job dispatch** for method `resize-image` with input `{"width":800,"height":600}`. The exact
-text frame Web sends:
+**Przydział Job** dla metody `resize-image` z wejściem `{"width":800,"height":600}`. Dokładna ramka
+tekstowa, którą wysyła Web:
 
 ```
 {"type":"Job","data":"{\"id\":\"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\"name\":\"resize-image\",\"data\":\"{\\\"width\\\":800,\\\"height\\\":600}\"}"}
 ```
 
-Decoding it, level by level:
+Dekodowanie, poziom po poziomie:
 
-1. **Frame → envelope:** `{ "type": "Job", "data": "{\"id\":\"a1b2…\",\"name\":\"resize-image\",\"data\":\"{\\\"width\\\":800,…}\"}" }`
-2. **Parse `data` → `MessageJob`:** `{ "id": "a1b2…", "name": "resize-image", "data": "{\"width\":800,\"height\":600}" }`
-3. **Parse `MessageJob.data` → input:** `{ "width": 800, "height": 600 }`
+1. **Ramka → koperta:** `{ "type": "Job", "data": "{\"id\":\"a1b2…\",\"name\":\"resize-image\",\"data\":\"{\\\"width\\\":800,…}\"}" }`
+2. **Parsowanie `data` → `MessageJob`:** `{ "id": "a1b2…", "name": "resize-image", "data": "{\"width\":800,\"height\":600}" }`
+3. **Parsowanie `MessageJob.data` → wejście:** `{ "width": 800, "height": 600 }`
 
-Every fixture in [`fixtures/`](./fixtures/) is one such exact frame.
-
----
-
-## 9. Versioning & compatibility
-
-- This is **v1**, descriptive of the current reference implementation.
-- **Version negotiation** happens on the handshake via the `X-Zapqio-Protocol-Version` header (§3):
-  the runner sends its major version; the server accepts only versions it supports, replying **426
-  Upgrade Required** otherwise. A missing header is treated as `1` for backward compatibility with
-  pre-versioning runners.
-- Compatibility rules for future revisions: adding an **optional** field is backward compatible;
-  removing/renaming a field, or changing an enum string, is **breaking** and requires a version bump.
+Każdy fixture w katalogu [`fixtures/`](./fixtures/) to jedna taka dokładna ramka.
 
 ---
 
-## 10. Conformance
+## 9. Wersjonowanie i zgodność
 
-An implementation conforms if it can both **produce** and **consume** every fixture in
-[`fixtures/`](./fixtures/) such that, after full decoding (frame → envelope → payload → nested job
-I/O), the logical content equals the fixture's documented content.
-
-Comparison is **semantic** (parsed structures are deep-equal), **not byte-exact**: insignificant
-whitespace and object key order do not matter. Producers SHOULD nonetheless emit the field casing
-and enum strings exactly as specified, because not every consumer is lenient.
+- To jest **v1**, opisowa wobec bieżącej implementacji referencyjnej.
+- **Negocjacja wersji** odbywa się podczas uzgadniania połączenia przez nagłówek
+  `X-Zapqio-Protocol-Version` (§3): runner wysyła swoją wersję główną, a serwer akceptuje wyłącznie
+  wersje, które obsługuje, odpowiadając w przeciwnym razie **426 Upgrade Required**. Brak nagłówka
+  jest traktowany jak `1` dla zgodności wstecznej z runnerami sprzed wersjonowania.
+- Zasady zgodności dla przyszłych rewizji: dodanie pola **opcjonalnego** jest zgodne wstecz;
+  usunięcie lub zmiana nazwy pola, albo zmiana ciągu wyliczenia, **łamie zgodność** i wymaga
+  podniesienia wersji.
 
 ---
 
-## 11. Reference implementation map
+## 10. Zgodność ze specyfikacją
 
-This document, with [`schemas.json`](./schemas.json) and [`fixtures/`](./fixtures/), is *intended* as
-the source of truth: the .NET code here is **one** implementation of it, not its definition.
+Implementacja jest zgodna, jeżeli potrafi zarówno **wyprodukować**, jak i **skonsumować** każdy
+fixture z katalogu [`fixtures/`](./fixtures/) w taki sposób, że po pełnym zdekodowaniu (ramka →
+koperta → ładunek → zagnieżdżone wejście/wyjście zadania) zawartość logiczna jest równa zawartości
+udokumentowanej dla danego fixture'a.
 
-Be aware of the current gap — no automated suite yet checks the .NET code against the fixtures, so in
-practice the code can drift from this document without anything failing. Until that suite exists,
-treat any disagreement between code and spec as a bug worth reporting rather than as settled.
+Porównanie jest **semantyczne** (sparsowane struktury są głęboko równe), a **nie bajt w bajt**:
+nieznaczące białe znaki i kolejność kluczy w obiektach nie mają znaczenia. Producenci POWINNI mimo to
+emitować wielkość liter w nazwach pól oraz ciągi wyliczeń dokładnie tak, jak określono, ponieważ nie
+każdy konsument jest pobłażliwy.
 
-The reference runner is a WebSocket **client**. Its layout, for readers who want to see a rule in
-working code:
+---
 
-| Concern | File |
+## 11. Mapa implementacji referencyjnej
+
+Ten dokument, wraz z [`schemas.json`](./schemas.json) i [`fixtures/`](./fixtures/), jest źródłem
+prawdy: kod .NET jest **jedną** z implementacji, a nie definicją protokołu.
+
+Reguły **łącza** są sprawdzane automatycznie. Oba wiązania .NET — `Zapqio.Runner.Protocol` w runnerze
+referencyjnym i `Zapqio.Protocol` w Web — mają zestaw testów zgodności, który konsumuje i produkuje
+każdy fixture oraz waliduje ładunki wobec `schemas.json`, czytając te pliki, a nie kopię ich treści.
+Zmieniona nazwa pola, inna wartość wyliczenia albo zgubiona warstwa kodowania kończy się tam błędem.
+Reguły **zachowania** nie są objęte tymi testami: uzgadnianie połączenia i jego kody odrzucenia (§3),
+cykl życia zadania (§5.2), wymóg logu przed wywołaniem (§5.3) oraz okno przyjmowania wyniku (§5.4) są
+weryfikowane wyłącznie przeglądem kodu, więc każdą rozbieżność między kodem a specyfikacją w tych
+punktach traktuj jako błąd wart zgłoszenia, a nie jako stan uzgodniony.
+
+Runner referencyjny jest **klientem** WebSocket i znajduje się w `github.com/zapqio/runner-dotnet`.
+Jego układ, dla czytelników, którzy chcą zobaczyć daną regułę w działającym kodzie — Web ma własne
+wiązanie tych samych typów wiadomości w `Zapqio.Protocol`:
+
+| Zagadnienie | Plik |
 | --- | --- |
-| Envelope + JSON options (camelCase, string enums) | `Zapqio.Protocol/Message.cs`, `Zapqio.Protocol/JsonDefaults.cs` |
-| Payload shapes | `Zapqio.Protocol/Message{Info,Method,Job,JobReturn,Log}.cs` |
-| Enum definitions | `Zapqio.Protocol/Enums/Message{Type,LogLevel,ResponseStatus}.cs` |
-| Negotiated version constant | `Zapqio.Protocol/ProtocolVersion.cs` |
-| Handshake & sending (client) | `Zapqio.Runner/WSClient.cs` |
-| Runner loop (Info, poll, dispatch) | `Zapqio.Runner/Background/RequestBindBackground.cs` |
-| Log queue & flush cadence | `Zapqio.Runner/Background/SendLogsBackground.cs`, `Zapqio.Runner/LogQueue.cs`, `Zapqio.Runner/ScopedConsole.cs` |
+| Koperta + opcje JSON (camelCase, wyliczenia jako ciągi) | `Zapqio.Runner.Protocol/Message.cs`, `Zapqio.Runner.Protocol/JsonDefaults.cs` |
+| Kształty ładunków | `Zapqio.Runner.Protocol/Message{Info,Method,Job,JobReturn,Log}.cs` |
+| Definicje wyliczeń | `Zapqio.Runner.Protocol/Enums/Message{Type,LogLevel,ResponseStatus}.cs` |
+| Stała negocjowanej wersji | `Zapqio.Runner.Protocol/ProtocolVersion.cs` |
+| Zestaw testów zgodności (fixture'y + schematy) | `Zapqio.Runner.Protocol.Tests/` |
+| Uzgadnianie połączenia i wysyłka (klient) | `Zapqio.Runner/WSClient.cs` |
+| Pętla runnera (Info, odpytanie, przydział) | `Zapqio.Runner/Background/RequestBindBackground.cs` |
+| Kolejka logów i kadencja opróżniania | `Zapqio.Runner/Background/SendLogsBackground.cs`, `Zapqio.Runner/LogQueue.cs`, `Zapqio.Runner/ScopedConsole.cs` |
 
-The **server** side (Web) is not part of this repository. Everything a runner needs to interoperate
-with it is specified here: the handshake and its rejection codes (§3), the envelope (§4), the
-message set and their direction (§5), and the version negotiation rules (§9). No behaviour of the
-server beyond this document may be relied upon.
+Strona **serwera** (Web) nie jest częścią tego repozytorium. Wszystko, czego runner potrzebuje do
+współpracy z nim, jest określone tutaj: uzgadnianie połączenia i jego kody odrzucenia (§3), koperta
+(§4), zestaw wiadomości i ich kierunki (§5) oraz zasady negocjacji wersji (§9). Nie wolno polegać na
+żadnym zachowaniu serwera wykraczającym poza ten dokument.

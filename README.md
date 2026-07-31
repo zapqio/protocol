@@ -1,21 +1,20 @@
-# Zapqio Runner Protocol
+# Protokół Zapqio Runner
 
-This directory is the **language-neutral source of truth** for the wire protocol between the
-Zapqio **Web** server and a **Runner**. A runner written in *any* language can connect to Web by
-conforming to it.
+Ten katalog jest **niezależnym od języka źródłem prawdy** dla protokołu komunikacji między serwerem
+**Web** Zapqio a **Runnerem**. Runner napisany w *dowolnym* języku może połączyć się z Web, o ile
+jest z nim zgodny.
 
-| File | Purpose |
+| Plik | Przeznaczenie |
 | --- | --- |
-| [`PROTOCOL.md`](./PROTOCOL.md) | The normative specification — **read this first**. |
-| [`PROTOCOL.pl.md`](./PROTOCOL.pl.md) | Polish translation of the specification. Non-normative — `PROTOCOL.md` wins on any disagreement. |
-| [`schemas.json`](./schemas.json) | JSON Schema (Draft 2020-12) for the envelope and all payloads. |
-| [`fixtures/`](./fixtures/) | Canonical example messages used as cross-language conformance vectors. |
+| [`PROTOCOL.md`](./PROTOCOL.md) | Specyfikacja normatywna — **czytaj to najpierw**. |
+| [`schemas.json`](./schemas.json) | JSON Schema (Draft 2020-12) dla koperty i wszystkich ładunków. |
+| [`fixtures/`](./fixtures/) | Kanoniczne przykładowe wiadomości, używane jako międzyjęzykowe wektory zgodności. |
 
-**Status: Draft v1** — descriptive, reverse-engineered from the reference .NET implementation
-(`Zapqio.Protocol`). The protocol version is negotiated on the handshake (§3);
-see [`PROTOCOL.md` §9](./PROTOCOL.md#9-versioning--compatibility).
+**Status: wersja robocza v1** — opisowa, odtworzona z referencyjnej implementacji .NET. Wersja
+protokołu jest uzgadniana przy nawiązywaniu połączenia (§3); zob.
+[`PROTOCOL.md` §9](./PROTOCOL.md#9-wersjonowanie-i-zgodność).
 
-The protocol is plain JSON over a WebSocket, so it is implementable in any language. Note that a
-*runner* is more than the protocol: it is also a **host** (the connection/poll/log loop) plus a
-**per-language module model** (how methods are defined and executed). Only the protocol crosses the
-language boundary — see [`PROTOCOL.md` §1](./PROTOCOL.md#1-overview).
+Protokół to zwykły JSON po WebSockecie, więc da się go zaimplementować w dowolnym języku. Zwróć
+uwagę, że *runner* to więcej niż protokół: to także **host** (pętla połączenia, odpytywania i logów)
+oraz **model modułów specyficzny dla języka** (sposób, w jaki definiuje się i wykonuje metody).
+Granicę języka przekracza wyłącznie protokół — zob. [`PROTOCOL.md` §1](./PROTOCOL.md#1-przegląd).
