@@ -7,7 +7,7 @@ To jest **źródło prawdy** dla protokołu komunikacji między serwerem **Web**
 Każdy runner — w dowolnym języku — który jest zgodny z tym dokumentem, może połączyć się z Web.
 
 Ta wersja ma charakter *opisowy*: dokumentuje zachowanie referencyjnej implementacji .NET wg stanu na
-2026-07-31. §11 mapuje każdą regułę z tego dokumentu na kod, który ją realizuje, dzięki czemu
+2026-08-04. §11 mapuje każdą regułę z tego dokumentu na kod, który ją realizuje, dzięki czemu
 specyfikację można ponownie zweryfikować.
 
 Słowa kluczowe MUSI, NIE WOLNO, POWINIEN oraz MOŻE są używane w rozumieniu RFC 2119 i odpowiadają
@@ -79,10 +79,16 @@ Zachowanie serwera:
   kolejnych połączeniach nazwa MUSI być równa nazwie powiązanej, w przeciwnym razie → HTTP **401**.
 - Nieobsługiwana wersja protokołu → HTTP **426 Upgrade Required** (odpowiedź niesie
   `X-Zapqio-Protocol-Version: <wersja serwera>`); wersja niebędąca liczbą całkowitą → HTTP **400**.
+- **Ograniczenie tempa:** serwer MOŻE odrzucić uzgadnianie z HTTP **429 Too Many Requests**, zanim
+  sprawdzi token. Sprawdzenie tokenu jest kosztowne, a endpoint jest anonimowy, więc serwer chroni
+  się przed zalewem uzgodnień. Odpowiedź MOŻE nieść nagłówek `Retry-After` z liczbą sekund. Progi i
+  sposób ich liczenia są sprawą serwera i nie są częścią protokołu.
 - W pozostałych przypadkach → **101 Switching Protocols**.
 
-Kolejność, w jakiej serwer sprawdza te warunki — negocjacja wersji wypada przed wyszukaniem tokenu,
-więc runner mówiący niewspieraną wersją zostaje odprawiony, zanim Web sięgnie po dane runnerów:
+Kolejność, w jakiej serwer sprawdza te warunki. Negocjacja wersji wypada przed wyszukaniem tokenu,
+więc runner mówiący niewspieraną wersją zostaje odprawiony, zanim Web sięgnie po dane runnerów;
+ograniczenie tempa stoi między nimi, bo to sprawdzenie tokenu jest tym drogim krokiem, który ma
+chronić:
 
 ```mermaid
 flowchart TD
@@ -93,7 +99,9 @@ flowchart TD
     C -- "tak" --> F{"X-Zapqio-Protocol-Version"}
     F -- "wartość niecałkowita" --> R400
     F -- "różna od wersji serwera" --> R426["426 Upgrade Required<br/>X-Zapqio-Protocol-Version: wersja serwera"]
-    F -- "brak (przyjmij 1) lub równa" --> D{"Token pasuje do jakiegoś runnera?"}
+    F -- "brak (przyjmij 1) lub równa" --> L{"Mieści się w limicie uzgodnień?"}
+    L -- "nie" --> R429["429 Too Many Requests<br/>opcjonalnie Retry-After"]
+    L -- "tak" --> D{"Token pasuje do jakiegoś runnera?"}
     D -- "nie" --> R401
     D -- "tak" --> E{"Nazwa zgodna z powiązaną?"}
     E -- "nie" --> R401
@@ -110,6 +118,11 @@ Uwagi:
   **niecałkowita** → HTTP 400; wartość, której serwer **nie** obsługuje → **426 Upgrade Required**,
   z wersją serwera odesłaną w nagłówku odpowiedzi `X-Zapqio-Protocol-Version`. Wersja główna jest
   podnoszona wyłącznie przy zmianie łamiącej zgodność (§9).
+- **429 znaczy „spróbuj później"**, a nie „tożsamość odrzucona" — serwer nie doszedł nawet do tokenu,
+  więc odmowa nic o nim nie mówi. Runnerowi NIE WOLNO ponawiać uzgadniania w ciasnej pętli: POWINIEN
+  odczekać czas podany w `Retry-After`, a gdy nagłówka nie ma — wycofywać się narastająco. Ponawianie
+  bez zwłoki utrzymuje ograniczenie w stanie zadziałania i opóźnia powrót pozostałych runnerów, w tym
+  jego własny.
 
 ---
 
@@ -380,6 +393,9 @@ Każdy fixture w katalogu [`fixtures/`](./fixtures/) to jedna taka dokładna ram
 - Zasady zgodności dla przyszłych rewizji: dodanie pola **opcjonalnego** jest zgodne wstecz;
   usunięcie lub zmiana nazwy pola, albo zmiana ciągu wyliczenia, **łamie zgodność** i wymaga
   podniesienia wersji.
+- Nowy **kod odrzucenia** uzgadniania nie łamie zgodności i nie podnosi wersji głównej — tak samo
+  weszło **429** (§3). Runner POWINIEN więc traktować każdy nieznany status inny niż 101 jako odmowę
+  i wycofać się narastająco, zamiast ponawiać natychmiast albo uznać połączenie za nawiązane.
 
 ---
 
