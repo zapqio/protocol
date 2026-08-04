@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://zapqio.dev/protocol/v1/schemas.json",
-  "title": "Zapqio Runner Protocol — v1",
+  "$id": "https://zapqio.dev/protocol/v2/schemas.json",
+  "title": "Zapqio Runner Protocol — v2",
   "description": "Schemas for the WebSocket messages exchanged between Zapqio Web (server) and a Runner (client). IMPORTANT: the envelope's `data` field is a STRING containing the JSON-encoded payload (double-encoding). These $defs describe the DECODED payloads; parse `data` as JSON before validating it against the payload schema matching `type`. See PROTOCOL.md.",
   "$defs": {
     "message": {
@@ -12,12 +12,12 @@
       "properties": {
         "type": {
           "title": "Message type",
-          "enum": ["Info", "Job", "JobReturn", "Log"]
+          "enum": ["Info", "Job", "JobAccepted", "JobReturn", "Log"]
         },
         "data": {
           "title": "JSON-encoded payload (double-encoded), or null",
           "type": ["string", "null"],
-          "description": "A JSON document encoded as a string. Decode it, then validate against: Info -> $defs/messageInfo; Job (web->runner) -> $defs/messageJob; JobReturn -> $defs/messageJobReturn; Log -> $defs/messageLog. Null only for a Job poll (runner->web)."
+          "description": "A JSON document encoded as a string. Decode it, then validate against: Info -> $defs/messageInfo; Job (web->runner) -> $defs/messageJob; JobAccepted -> $defs/messageJobAccepted; JobReturn -> $defs/messageJobReturn; Log -> $defs/messageLog. Null only for a Job poll (runner->web)."
         }
       }
     },
@@ -45,21 +45,33 @@
     "messageJob": {
       "title": "Job dispatch payload (web->runner)",
       "type": "object",
-      "required": ["id", "name", "data"],
+      "required": ["id", "attemptId", "name", "data"],
       "additionalProperties": false,
       "properties": {
         "id": { "type": "string", "format": "uuid" },
+        "attemptId": { "type": "string", "format": "uuid", "description": "Identifies THIS dispatch. The same job id may be dispatched several times; attemptId differs each time. Echo it back unchanged in JobAccepted, every Log and JobReturn." },
         "name": { "type": "string", "description": "Method name to execute (matches a messageMethod.name)." },
         "data": { "type": ["string", "null"], "description": "Job input as a JSON string (matches the method's `in` schema). May be empty or null." }
+      }
+    },
+    "messageJobAccepted": {
+      "title": "Dispatch acknowledgement payload (runner->web)",
+      "type": "object",
+      "required": ["id", "attemptId"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "attemptId": { "type": "string", "format": "uuid", "description": "The attemptId from the dispatch being acknowledged." }
       }
     },
     "messageJobReturn": {
       "title": "Job result payload (runner->web)",
       "type": "object",
-      "required": ["id", "status", "data"],
+      "required": ["id", "attemptId", "status", "data"],
       "additionalProperties": false,
       "properties": {
         "id": { "type": "string", "format": "uuid" },
+        "attemptId": { "type": "string", "format": "uuid", "description": "The attemptId from the dispatch this result belongs to." },
         "status": { "enum": ["OK", "ERROR"] },
         "data": { "type": ["string", "null"], "description": "On OK: job output as a JSON string (matches the method's `out` schema). On ERROR: null." }
       }
@@ -67,10 +79,11 @@
     "messageLog": {
       "title": "Log payload (runner->web)",
       "type": "object",
-      "required": ["jobId", "level", "message", "date"],
+      "required": ["jobId", "attemptId", "level", "message", "date"],
       "additionalProperties": false,
       "properties": {
         "jobId": { "type": "string", "format": "uuid" },
+        "attemptId": { "type": "string", "format": "uuid", "description": "The attemptId from the dispatch this entry belongs to." },
         "level": { "enum": ["Info", "Error"] },
         "message": { "type": "string" },
         "date": { "type": "string", "format": "date-time", "description": "ISO-8601 timestamp with timezone offset." }

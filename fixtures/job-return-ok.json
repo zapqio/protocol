@@ -1,4 +1,4 @@
 {
   "type": "JobReturn",
-  "data": "{\"id\":\"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\"status\":\"OK\",\"data\":\"{\\\"url\\\":\\\"https://cdn.example.com/out/123.png\\\"}\"}"
+  "data": "{\"id\":\"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\"attemptId\":\"7f3e9c21-4b8a-4d15-9e62-0c5a7b1d8f34\",\"status\":\"OK\",\"data\":\"{\\\"url\\\":\\\"https://cdn.example.com/out/123.png\\\"}\"}"
 }
