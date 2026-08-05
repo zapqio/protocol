@@ -73,7 +73,7 @@
         "id": { "type": "string", "format": "uuid" },
         "attemptId": { "type": "string", "format": "uuid", "description": "The attemptId from the dispatch this result belongs to." },
         "status": { "enum": ["OK", "ERROR"] },
-        "data": { "type": ["string", "null"], "description": "On OK: job output as a JSON string (matches the method's `out` schema). On ERROR: null." }
+        "data": { "type": ["string", "null"], "description": "On OK: job output as a JSON string (matches the method's `out` schema), which Web feeds to the next pipeline step. On ERROR it SHOULD be null; anything sent is kept on the failed attempt as a diagnostic note and is never passed on." }
       }
     },
     "messageLog": {

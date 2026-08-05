@@ -1,31 +1,24 @@
-# Protokół Zapqio Runner — v2 (wersja robocza)
-
-> **Uwaga.** Nazwy pól, nagłówków HTTP, typów wiadomości i wartości wyliczeń **nie są tłumaczone** —
-> na łączu występują dokładnie w formie podanej w tym dokumencie.
+# Protokół Zapqio Runner
 
 To jest **źródło prawdy** dla protokołu komunikacji między serwerem **Web** Zapqio a **Runnerem**.
 Każdy runner — w dowolnym języku — który jest zgodny z tym dokumentem, może połączyć się z Web.
-
-Ta wersja ma charakter *opisowy*: dokumentuje zachowanie referencyjnej implementacji .NET wg stanu na
-2026-08-04. §11 mapuje każdą regułę z tego dokumentu na kod, który ją realizuje, dzięki czemu
-specyfikację można ponownie zweryfikować.
-
-Słowa kluczowe MUSI, NIE WOLNO, POWINIEN oraz MOŻE są używane w rozumieniu RFC 2119 i odpowiadają
-angielskim MUST, MUST NOT, SHOULD i MAY.
 
 ---
 
 ## 1. Przegląd
 
+To jest **v2** protokołu — wersja główna, którą runner deklaruje przy uzgadnianiu połączenia (§3), a
+której zasady podnoszenia opisuje §9.
+
 **Runner** jest **klientem** WebSocket. **Web** jest **serwerem** WebSocket. Runner nawiązuje
 połączenie, uwierzytelnia się nagłówkami HTTP, ogłasza metody, które potrafi wykonać, a następnie
-odbiera zadania, wykonuje je, strumieniuje logi i zwraca wyniki. Każda wiadomość aplikacyjna to
-tekstowa ramka JSON o wspólnej [kopercie](#4-koperta).
+odbiera zadania, potwierdza ich odbiór, wykonuje je, strumieniuje logi i zwraca wyniki. Każda
+wiadomość aplikacyjna to tekstowa ramka JSON o wspólnej [kopercie](#4-koperta).
 
-Web jest **agnostyczny** wobec tego, jak runner wykonuje zadanie ani w jakim języku jest napisany.
-Kieruje zadania według pary `(runner, nazwa metody)` i traktuje wejście oraz wyjście każdego zadania
-jako **nieprzezroczysty ciąg znaków**. Runnery mogą być więc niejednorodne: jeden pipeline może mieć
-kroki wykonywane przez różne runnery napisane w różnych językach.
+Web nie wie, jak runner wykonuje zadanie ani w jakim języku jest napisany — i nie musi. Kieruje
+zadania po **nazwie runnera i nazwie metody**, a wejście i wyjście przekazuje dalej jako **zwykły
+ciąg znaków**, nie zaglądając do środka. Dlatego jeden pipeline może łączyć kroki z różnych runnerów,
+każdy napisany w innym języku.
 
 Kompletna implementacja runnera to trzy warstwy, ale **tylko pierwsza przekracza granicę języka**:
 
@@ -35,16 +28,23 @@ Kompletna implementacja runnera to trzy warstwy, ale **tylko pierwsza przekracza
    (np. dekoratory + generator JSON Schema). Model .NET oparty na `IRunnerMethod` i ładowaniu
    assembly **nie jest przenośny**; moduły są specyficzne dla języka.
 
+Wzmianki o **runnerze referencyjnym** w dalszych sekcjach dotyczą implementacji .NET z
+[`github.com/zapqio/runner-dotnet`](https://github.com/zapqio/runner-dotnet) — jedynego działającego
+przykładu klienta tego protokołu. Jest ona **jedną** z implementacji, a nie definicją protokołu:
+źródłem prawdy jest ten dokument wraz z [`schemas.json`](./schemas.json) i
+[`fixtures/`](./fixtures/) (§10).
+
 
 | Nadawca | Odbiorca | Komunikat / Akcja | Szczegóły i zachowanie serwera |
 |---|---|---|---|
-| **Runner** | **Web** | Nawiązanie połączenia (`GET /ws-runner`) | Przesyła nagłówki: `X-Zapqio-Token`, `X-Zapqio-Name`. Zwraca kod `101` (lub błędy `400`/`401`/`426` — §3). |
+| **Runner** | **Web** | Nawiązanie połączenia (`GET /ws-runner`) | Przesyła nagłówki: `X-Zapqio-Token`, `X-Zapqio-Name`, `X-Zapqio-Protocol-Version`. Zwraca kod `101` (lub odmowę `400`/`401`/`426`/`429` — §3). |
 | **Runner** | **Web** | `Info` (metody + nazwa) | Serwer rejestruje u siebie przesłane metody. |
-| **Web** | **Runner** | `Job` (przydział) | Serwer aktywnie wypycha nowe zadanie do wykonania. |
+| **Web** | **Runner** | `Job` (przydział) | Serwer aktywnie wypycha nowe zadanie do wykonania. Trzyma u runnera najwyżej **jedno** nierozstrzygnięte zadanie naraz (§5.2). |
 | **Runner** | **Web** | `JobAccepted` (potwierdzenie) | „Mam to zadanie i je wykonam". Bez potwierdzenia w terminie serwer zwraca zadanie do kolejki. |
 | **Runner** | **Web** | `Log ... Log ...` | Strumieniowanie logów na żywo w trakcie wykonywania zadania. |
 | **Runner** | **Web** | `JobReturn` (OK/ERROR + wynik) | Serwer zapisuje wynik i podaje go do kolejnego kroku. |
-| **Runner** | **Web** | `Job` (odpytanie, `data=null`) | Klient zgłasza gotowość komunikatem „daj mi więcej pracy”. |
+| **Runner** | **Web** | `Job` (odpytanie, `data=null`) | Klient zgłasza gotowość komunikatem „daj mi więcej pracy”. Gdy nic nie czeka, serwer **nie odsyła nic**. |
+| **Web** | **Runner** | Zamknięcie połączenia (ramka Close) | Kończy sesję — np. `1009`, gdy wiadomość przekroczy limit rozmiaru (§2). Przy ponownym połączeniu tego samego runnera stare gniazdo bywa **przerywane bez ramki Close**. |
 
 
 ---
@@ -52,18 +52,45 @@ Kompletna implementacja runnera to trzy warstwy, ale **tylko pierwsza przekracza
 ## 2. Transport i ramkowanie
 
 - **WebSocket** (RFC 6455). Punkt końcowy: `GET {baseUrl}/ws-runner` ze standardowym upgrade, gdzie
-  `{baseUrl}` to origin serwera Web (np. `wss://zapqio.example.com`).
+  `{baseUrl}` to adres **Twojej instancji** — a nie sam host. Instancje stoją pod wspólnym hostem i
+  rozróżnia je segment ścieżki, czyli nazwa instancji nadana przy zakupie produktu:
+
+  ```
+  wss://app.zapq.io/{instancja}/ws-runner     ← produkcja
+  ws://localhost:5208/hdwr-test/ws-runner     ← lokalnie
+  ```
+
+  Nazwa instancji jest więc częścią adresu i runner MUSI ją podać — bez niej żądanie nie trafia w
+  punkt końcowy w ogóle. (Runner referencyjny odczytuje `{baseUrl}` ze zmiennej `ZAPQIO_URL` i sam
+  dokleja `/ws-runner`, więc w konfiguracji podaje się adres **bez** tego sufiksu.) Wdrożenie
+  własne, postawione wprost pod hostem, ma pusty segment i punkt końcowy `{host}/ws-runner`.
 - Wiadomości aplikacyjne to ramki **tekstowe**, **UTF-8**, każda będąca pojedynczym obiektem JSON
   (kopertą). Implementacje MUSZĄ scalać ramki kontynuacyjne aż do FIN przed parsowaniem.
 - Maksymalny rozmiar wiadomości po stronie serwera: **32 MiB** (33 554 432 bajty). Większa wiadomość
   powoduje zamknięcie połączenia ze statusem WS **1009** (Message Too Big).
+
+  Limit obejmuje **całą kopertę po zakodowaniu**, a nie sam ładunek — podwójne kodowanie (§4)
+  escape'uje cudzysłowy wewnątrz `data`, więc ramka jest wyraźnie większa niż to, co niesie. Wiąże
+  też **wyjście runnera**: `JobReturn`, którego koperta przekroczy limit, nie dociera nigdzie, a
+  zadanie zamiast wyniku dostaje zerwane połączenie. Runner POWINIEN więc ograniczać rozmiar wyniku
+  po swojej stronie, z zapasem na kodowanie.
+- **Ramka Close kończy sesję.** Runner MUSI potraktować odebraną ramkę Close jako koniec sesji:
+  przerwać pętlę odbioru, porzucić stan sesji i wrócić ścieżką ponownego łączenia (§3). NIE WOLNO
+  podawać jej parserowi wiadomości — Close nie niesie koperty, więc próba sparsowania kończy się
+  błędem wyglądającym na awarię zamiast na zwykłe zamknięcie. Zamknięcie nie zawsze jest zresztą
+  uprzejme: gdy ten sam runner łączy się ponownie, serwer **przerywa** poprzednie gniazdo bez ramki
+  Close, więc odczyt, który po prostu rzuca, też jest normalnym końcem sesji, a nie usterką.
 - Brak kompresji i grupowania (batching) na poziomie aplikacji.
+- **Brak pulsu na poziomie aplikacji.** Protokół nie ma wiadomości utrzymującej łączność, a serwer nie
+  rozłącza runnera za bezczynność — połączenie, na którym nic się nie dzieje, jest połączeniem
+  zdrowym. Nie buduj własnego pulsu z wiadomości opisanych w §5; do wykrywania martwych połączeń
+  służą mechanizmy samego WebSocketa (ping/pong, limity czasu gniazda).
 
 ---
 
 ## 3. Uzgadnianie połączenia i uwierzytelnianie
 
-W żądaniu upgrade runner MUSI wysłać dwa nagłówki:
+W żądaniu upgrade runner MUSI wysłać trzy nagłówki:
 
 | Nagłówek | Znaczenie |
 | --- | --- |
@@ -71,25 +98,26 @@ W żądaniu upgrade runner MUSI wysłać dwa nagłówki:
 | `X-Zapqio-Name`  | Stabilna, samodzielnie nadana nazwa runnera (z konfiguracji/zmiennej środowiskowej). |
 | `X-Zapqio-Protocol-Version` | **Główna** wersja protokołu, którą mówi runner (np. `2`). Brak nagłówka jest traktowany jak `1`, czyli — odkąd serwer mówi `2` — jak wersja nieobsługiwana. |
 
-Zachowanie serwera:
+Zachowanie serwera, **w tej właśnie kolejności sprawdzeń**:
 
 - Żądanie do `/ws-runner`, które **nie** jest upgrade WebSocket → HTTP **400**.
-- Brakujący lub pusty którykolwiek z nagłówków → HTTP **401**.
-- Token niepasujący do **żadnego** runnera → HTTP **401**.
-- **Powiązanie nazwy:** przy pierwszym połączeniu Web wiąże `X-Zapqio-Name` z rekordem runnera. Przy
-  kolejnych połączeniach nazwa MUSI być równa nazwie powiązanej, w przeciwnym razie → HTTP **401**.
-- Nieobsługiwana wersja protokołu → HTTP **426 Upgrade Required** (odpowiedź niesie
-  `X-Zapqio-Protocol-Version: <wersja serwera>`); wersja niebędąca liczbą całkowitą → HTTP **400**.
+- Brakujący lub pusty `X-Zapqio-Token` albo `X-Zapqio-Name` → HTTP **401**. Brak
+  `X-Zapqio-Protocol-Version` **nie** należy do tego przypadku — jest traktowany jak wersja `1`, a
+  więc rozstrzyga się punkt niżej.
+- Wersja niebędąca liczbą całkowitą → HTTP **400**; nieobsługiwana wersja protokołu → HTTP
+  **426 Upgrade Required** (odpowiedź niesie `X-Zapqio-Protocol-Version: <wersja serwera>`).
 - **Ograniczenie tempa:** serwer MOŻE odrzucić uzgadnianie z HTTP **429 Too Many Requests**, zanim
   sprawdzi token. Sprawdzenie tokenu jest kosztowne, a endpoint jest anonimowy, więc serwer chroni
   się przed zalewem uzgodnień. Odpowiedź MOŻE nieść nagłówek `Retry-After` z liczbą sekund. Progi i
   sposób ich liczenia są sprawą serwera i nie są częścią protokołu.
+- Token niepasujący do **żadnego** runnera → HTTP **401**.
+- **Powiązanie nazwy:** przy pierwszym połączeniu Web wiąże `X-Zapqio-Name` z rekordem runnera. Przy
+  kolejnych połączeniach nazwa MUSI być równa nazwie powiązanej, w przeciwnym razie → HTTP **401**.
 - W pozostałych przypadkach → **101 Switching Protocols**.
 
-Kolejność, w jakiej serwer sprawdza te warunki. Negocjacja wersji wypada przed wyszukaniem tokenu,
-więc runner mówiący niewspieraną wersją zostaje odprawiony, zanim Web sięgnie po dane runnerów;
-ograniczenie tempa stoi między nimi, bo to sprawdzenie tokenu jest tym drogim krokiem, który ma
-chronić:
+Kolejność nie jest przypadkowa. Negocjacja wersji wypada przed wyszukaniem tokenu, więc runner
+mówiący niewspieraną wersją zostaje odprawiony, zanim Web sięgnie po dane runnerów; ograniczenie
+tempa stoi między nimi, bo to sprawdzenie tokenu jest tym drogim krokiem, który ma chronić:
 
 ```mermaid
 flowchart TD
@@ -114,6 +142,14 @@ Uwagi:
 - **Token jest tożsamością i sekretem**; **nazwa jest stabilną etykietą**. Wybierz nazwę raz i
   utrzymuj ją niezmienną. (Runner referencyjny odczytuje `ZAPQIO_NAME`, a jeśli nic nie
   skonfigurowano, generuje UUID i zapisuje go trwale do pliku `##Name`.)
+- **Adres instancji jest częścią tożsamości.** Token istnieje w bazie **jednej** instancji, a każda
+  instancja ma własny segment adresu (§2). Ten sam token użyty pod adresem innej instancji nie pasuje
+  tam do żadnego runnera i kończy się `401` — pomyłka w nazwie instancji wygląda więc jak zły token,
+  choć nim nie jest.
+- **Zły segment instancji nie daje żadnego z powyższych kodów.** Żądanie, które nie trafiło w
+  `/ws-runner` **tej** instancji, w ogóle nie dociera do tego punktu końcowego — odpowiada na nie
+  reszta aplikacji. Runner dostaje wtedy `404` albo stronę HTML zamiast odmowy protokołu, więc
+  „przyszło HTML zamiast `101`" znaczy „zły adres", a nie „zła tożsamość".
 - **Wersja protokołu** jest negocjowana nagłówkiem `X-Zapqio-Protocol-Version` (całkowita wersja
   główna). **Brak** nagłówka → przyjmuje się `1` (poziom bazowy sprzed wersjonowania); wartość
   **niecałkowita** → HTTP 400; wartość, której serwer **nie** obsługuje → **426 Upgrade Required**,
@@ -124,6 +160,10 @@ Uwagi:
   odczekać czas podany w `Retry-After`, a gdy nagłówka nie ma — wycofywać się narastająco. Ponawianie
   bez zwłoki utrzymuje ograniczenie w stanie zadziałania i opóźnia powrót pozostałych runnerów, w tym
   jego własny.
+- **Odpowiedź, której runner nie zna, też jest odmową.** Powyższa lista kodów nie musi być ostatnią,
+  jaką serwer kiedykolwiek zwróci. Runner POWINIEN więc traktować **każdą** odpowiedź inną niż `101`
+  jako odmowę i wycofać się narastająco — nigdy nie ponawiać natychmiast ani nie uznawać połączenia
+  za nawiązane. Dzięki temu dołożenie nowego kodu odmowy nie wywraca runnerów, które już działają.
 
 ---
 
@@ -135,8 +175,8 @@ Każda wiadomość WebSocket to dokładnie taki obiekt:
 { "type": "Job", "data": "…" }
 ```
 
-- **`type`** *(string, wymagane)* — typ wiadomości: jeden z `Info`, `Job`, `JobReturn`, `Log`.
-  Dokładna wielkość liter w §6.
+- **`type`** *(string, wymagane)* — typ wiadomości: jeden z `Info`, `Job`, `JobAccepted`, `JobReturn`,
+  `Log`. Dokładna wielkość liter w §6.
 - **`data`** *(string lub null, wymagane)* — ładunek dla danego typu, **zakodowany jako JSON w
   postaci ciągu znaków**. Obiekt ładunku jest serializowany do JSON, a ten *tekst* JSON trafia do
   `data` jako wartość tekstowa. `null` wyłącznie dla [odpytania Job](#52-job).
@@ -144,6 +184,11 @@ Każda wiadomość WebSocket to dokładnie taki obiekt:
 > **⚠ PUŁAPKA — podwójne kodowanie.** `data` jest **ciągiem znaków**, a nie zagnieżdżonym obiektem.
 > Aby **odczytać** wiadomość: sparsuj kopertę, a następnie sparsuj `data` *ponownie* jako JSON. Aby
 > **zapisać**: zserializuj ładunek do ciągu znaków i przypisz go do `data`. Rozpisane bajty w §8.
+
+**Wiadomość, której nie da się odczytać, nie kończy sesji.** Odbiorca, który natrafi na niepoprawny
+JSON albo na `type`, którego nie zna, POWINIEN pominąć tę jedną wiadomość i czytać dalej — NIE WOLNO
+mu uznawać jej za koniec sesji ani zamykać z tego powodu połączenia. Tak zachowują się obie strony:
+błąd trafia do logu, a pętla odbioru wraca do czytania.
 
 Wszystkie nazwy właściwości obiektów są w **camelCase** (`type`, `data`, `id`, `name`, `jobId`,
 `level`, …).
@@ -156,8 +201,8 @@ Legenda kierunków: **R→W** runner→web, **W→R** web→runner.
 
 ### 5.1 Info (R→W)
 
-Wysyłane **raz**, zaraz po pierwszym udanym połączeniu. Ogłasza nazwę runnera oraz metody, które
-udostępnia. Ładunek — `MessageInfo`:
+Wysyłane po udanym połączeniu, zanim runner zacznie przyjmować zadania. Ogłasza nazwę runnera oraz
+metody, które udostępnia. Ładunek — `MessageInfo`:
 
 ```json
 {
@@ -175,8 +220,25 @@ udostępnia. Ładunek — `MessageInfo`:
   - `out` — **JSON Schema** opisujący **wyjście** metody, przenoszony *jako ciąg znaków*, albo `null`.
 
 Web zapisuje listę metod; interfejs użytkownika używa `in`/`out` do renderowania i walidacji wejścia
-oraz wyjścia zadań w pipeline. Runner referencyjny wysyła `Info` raz na proces; **wyślij `Info`
-ponownie, jeśli zmieni się zestaw metod** (np. po ponownym połączeniu z innym zestawem modułów).
+oraz wyjścia zadań w pipeline.
+
+**Każde `Info` zastępuje cały dotychczasowy zestaw metod — nie dokłada się do niego.** Runner, który
+dośle `Info` z jedną metodą, traci po stronie Web wszystkie pozostałe, a **pusta tablica** `methods`
+czyści zestaw do zera. Wysyłaj więc zawsze **komplet** metod udostępnianych w danej chwili. `methods`
+MUSI być tablicą — runner ogłaszający brak metod przysyła `[]`, nie `null`.
+
+**Wyślij `Info` ponownie, gdy zestaw metod się zmieni** — inaczej Web nie wie o nowych metodach, a do
+usuniętych wciąż kieruje zadania. Reguła dotyczy implementacji, w których zestaw metod potrafi się
+zmienić **w trakcie życia procesu**. Runner referencyjny do nich nie należy: moduły wczytuje raz, przy
+starcie, więc ich podmiana wymaga restartu — a restart wysyła `Info` sam z siebie. Dlatego wystarcza
+mu jedno `Info` na proces.
+
+Zapisane metody **przeżywają rozłączenie**, więc samo wznowienie połączenia nie wymaga powtarzania
+`Info`; kierowanie zadań działa dalej na tym, co Web ma zapisane w rekordzie runnera.
+
+`name` w ładunku jest **informacyjne**. O tożsamości rozstrzyga uzgadnianie połączenia (§3) i to
+nazwa stamtąd wiąże się z rekordem runnera; Web nie porównuje z nią wartości przysłanej w `Info` ani
+jej nie zapisuje.
 
 ### 5.2 Job
 
@@ -200,8 +262,10 @@ ponownie, jeśli zmieni się zestaw metod** (np. po ponownym połączeniu z inny
     `id` się wtedy nie zmienia, a `attemptId` za każdym razem jest inny. Odeślij go **niezmieniony**
     w `JobAccepted`, w **każdym** `Log` i w `JobReturn` tego zadania.
   - `name` — która metoda ma zostać uruchomiona (pasuje do `MessageMethod.name`).
-  - `data` — **wejście** zadania: samo w sobie ciąg znaków JSON (zgodny ze schematem `in` metody),
-    możliwe że pusty.
+  - `data` — **wejście** zadania: samo w sobie ciąg znaków JSON (zgodny ze schematem `in` metody).
+    MOŻE być puste albo `null` — pierwszy krok pipeline'u dostaje wejście uruchomienia, a każdy
+    kolejny to, co poprzedni krok zwrócił w `JobReturn`, więc `OK` z pustym wynikiem daje tu `null`.
+    Nie zakładaj, że to pole jest zawsze ciągiem znaków.
 
 > **Po co osobny `attemptId`.** Samo `id` nie wystarcza, żeby odróżnić wiadomość od bieżącej wysyłki
 > od wiadomości od poprzedniej. Runner, który stracił połączenie w trakcie zadania, może wrócić i
@@ -218,6 +282,10 @@ dyspozytora działającego w tle po stronie Web, który rusza 30 s po starcie We
 ok. 10 s. Runner wykonuje **jedno zadanie naraz** i po zakończeniu każdego zadania wysyła
 **odpytanie Job**, aby pobrać kolejne.
 
+Runner MOŻE wysłać odpytanie **od razu po `Info`**, nie czekając na dyspozytora — odpytanie znaczy
+tylko „jestem wolny". Bez tego pierwsze zadanie po starcie Web czeka do ok. 40 s (30 s rozruchu plus
+tyknięcie), co przy krótkim pipelinie wygląda jak awaria. Runner referencyjny tego nie robi i czeka.
+
 **Jeden przydział naraz.** Web trzyma u runnera **najwyżej jedno nierozstrzygnięte zadanie**: dopóki
 poprzednie nie skończy się `JobReturn`, nie wróci do kolejki ani nie zostanie zamknięte błędem,
 kolejne nie wychodzi — ani z dyspozytora, ani w odpowiedzi na odpytanie. Runner zastaje więc przydział
@@ -232,6 +300,18 @@ Limit jednego zadania sprawia, że potwierdzenie przychodzi od razu i termin mo�
 Runnerowi mimo to **NIE WOLNO** odrzucić przydziału. Jeśli mimo limitu przyjdzie drugi — bo Web jest
 w trakcie wdrożenia albo doszło do wyścigu — MUSI go zakolejkować u siebie i wykonać, gdy zwolni się
 miejsce. Odrzucony przydział przepada: nic go nie wyśle ponownie przed upływem terminu.
+
+**Koniec sesji kasuje tę kolejkę.** Zadania, które u runnera czekają nierozpoczęte, są po stronie Web
+w stanie *Dispatched* — po zniknięciu połączenia wracają do kolejki i zostaną wysłane ponownie.
+Runner MUSI je zatem **porzucić** wraz z sesją; przeniesienie ich przez ponowne połączenie wykonałoby
+je **drugi raz**. Odzyskiwaniem przydziałów zarządza Web, nie runner.
+
+**Przydział może wskazywać metodę, której runner nie ogłosił.** Web nie gwarantuje, że `name` jest
+jedną z nazw z ostatniego `Info`: krok pipeline'u mógł powstać, zanim runner cokolwiek ogłosił, albo
+wskazywać metodę, która zniknęła przy zmianie zestawu (§5.1). Runner MUSI wtedy potwierdzić przydział
+i wysłać log startowy normalnie, a dopiero potem zamknąć zadanie `JobReturn` ze statusem `ERROR`,
+zostawiając w logu czytelny powód. NIE WOLNO mu w takiej sytuacji milczeć ani zrywać sesji — zadanie
+zawisłoby wtedy do upływu terminu, a w historii uruchomienia zostałby sam `Error` bez wyjaśnienia.
 
 ### 5.3 JobAccepted (R→W)
 
@@ -252,6 +332,13 @@ przed wywołaniem metody, z pominięciem ewentualnego buforowania. Potwierdzenie
 „wiadomość do mnie dotarła i zadanie wykonam" — nie mówi, że metoda ruszyła. Od tego jest pierwszy
 `Log` (§5.4).
 
+Potwierdzenie **nie zmienia stanu zadania**: zostaje ono w *Dispatched*, dopóki nie ruszy go pierwszy
+`Log`. Odnotowuje tylko, że przydział dotarł — i tym samym zdejmuje z zadania termin opisany niżej.
+
+Potwierdzenie z `attemptId` innym niż bieżąca próba zadania jest **pomijane**, bo należy do wysyłki,
+którą Web już zamknął. Wysłanie `JobAccepted` po wznowieniu połączenia niczego zatem nie odzyskuje —
+tak samo jak spóźniony `Log` (§5.4) i spóźniony `JobReturn` (§5.5).
+
 **Termin.** Zadanie, które pozostaje w stanie *Dispatched* bez potwierdzenia dłużej niż **60 s**,
 Web uznaje za niedostarczone i zwraca do kolejki (*Waiting*). Nic się nie wykonało, więc ponowna
 wysyłka jest bezpieczna.
@@ -263,6 +350,12 @@ wyłapuje i zostawały one w *Dispatched* bezterminowo, blokując resztę swojeg
 
 > Sama wartość terminu jest ustawieniem serwera i MOŻE się zmienić; runner nie ma prawa na niej
 > polegać. Jedyne, co go obowiązuje, to wysłać potwierdzenie od razu.
+
+**To jedyny termin, jaki narzuca serwer.** Na **czas wykonania** metody nie ma żadnego limitu po
+stronie Web: zadanie, które ruszyło (§5.4) i którego runner pozostaje połączony, może stać w
+*Executing* dowolnie długo — nic go nie zamknie ani nie zakolejkuje ponownie. Limit czasu metody jest
+więc w całości odpowiedzialnością runnera, a jego brak objawia się jako uruchomienie pipeline'u,
+które nigdy się nie kończy.
 
 ### 5.4 Log (R→W)
 
@@ -283,7 +376,8 @@ Strumieniowane w trakcie wykonywania zadania. Ładunek — `MessageLog`:
   próby, którą Web już zamknął, i zostaje odrzucony.
 - `level`   — `Info` albo `Error` (§6).
 - `message` — treść logu.
-- `date`    — znacznik czasu ISO-8601 z przesunięciem strefy czasowej (§7).
+- `date`    — znacznik czasu ISO-8601 z przesunięciem strefy czasowej (§7). Pochodzi z zegara runnera
+  i Web zapisuje go bez korekty, więc to ten zegar ustala kolejność wpisów w historii zadania.
 
 **Pierwszy** `Log` dla zadania przełącza je po stronie serwera ze stanu *Dispatched* na *Executing*.
 To przejście decyduje o tym, jak odzyskiwane jest zadanie utracone: jeśli runner rozłączy się bez
@@ -299,6 +393,13 @@ efekt uboczny i ulec awarii przed kolejnym opróżnieniem kolejki; zadanie zosta
 Runner referencyjny przechwytuje `stdout` metody→`Info` oraz `stderr`→`Error`, a także ów wiersz
 startowy i ewentualny wyjątek. Wiersz startowy jest wysyłany synchronicznie, przed wywołaniem;
 pozostałe wpisy są opróżniane z kolejki na timerze co ok. 2 s, **jedna wiadomość WS na wpis**.
+
+**Log przyjęty po `JobReturn` wciąż się zapisuje.** O przyjęciu wpisu decyduje wyłącznie zgodność
+`attemptId` — status zadania nie jest tu sprawdzany, inaczej niż przy wyniku (§5.5). Wiersze, które
+runner opróżnia z kolejki już po odesłaniu wyniku, trafiają więc do historii normalnie. Kolejność
+logów względem `JobReturn` nie jest zatem niczym zagwarantowana i interfejs potrafi pokazać zadanie
+jako zakończone, gdy wiersze wciąż dochodzą. Runner, dla którego to problem, POWINIEN opróżnić kolejkę
+logów **przed** wysłaniem `JobReturn` — runner referencyjny tego nie robi, bo opróżnia ją na timerze.
 
 ### 5.5 JobReturn (R→W)
 
@@ -317,7 +418,9 @@ Wysyłane **raz**, gdy zadanie się zakończy. Ładunek — `MessageJobReturn`:
 - `attemptId` — `attemptId` z przydziału tego zadania (§5.2).
 - `status` — `OK` albo `ERROR` (§6).
 - `data`   — przy `OK`: **wyjście** zadania (ciąg znaków JSON zgodny z `out`), które Web podaje jako
-  **wejście kolejnego kroku pipeline**. Przy `ERROR`: `null`.
+  **wejście kolejnego kroku pipeline**. Przy `ERROR` POWINNO być `null` — a jeśli runner mimo to coś
+  przyśle, Web zachowa to przy nieudanej próbie jako ślad diagnostyczny, ale **nigdy nie poda dalej**:
+  po `ERROR` kolejny krok się nie uruchamia.
 
 Web przyjmuje wynik tylko wtedy, gdy spełnione są **wszystkie trzy** warunki: `attemptId` wskazuje
 bieżącą próbę zadania, zadanie jest wciąż w stanie *Dispatched* albo *Executing*, a wynik przyszedł
@@ -346,7 +449,7 @@ stateDiagram-v2
     state "Error = 4" as Error
 
     [*] --> Waiting
-    Waiting --> Dispatched: Web wypycha Job (dyspozytor, co ok. 10 s)
+    Waiting --> Dispatched: Web wypycha Job (dyspozytor co ok. 10 s albo odpowiedź na odpytanie)
     Dispatched --> Executing: pierwszy Log dla zadania
     Dispatched --> Waiting: runner rozłączony / nierozpoczęte, wraca do kolejki
     Dispatched --> Waiting: brak JobAccepted w terminie 60 s
@@ -355,6 +458,7 @@ stateDiagram-v2
     Executing --> Error: JobReturn ze status ERROR
     Dispatched --> Ok: JobReturn bez logu startowego (runner łamie §5.4)
     Dispatched --> Error: JobReturn bez logu startowego (runner łamie §5.4)
+    Error --> Waiting: ponowienie zlecone przez człowieka
     Ok --> [*]
     Error --> [*]
 
@@ -374,6 +478,11 @@ stateDiagram-v2
         JobReturn dla zadania, które Web już odpisał,
         jest odrzucany ze śladem w logu.
         Pipeline nie posuwa się przez niego dalej.
+
+        Error nie zawsze jest końcem: człowiek może
+        zlecić ponowienie, które przestawia zadanie
+        z powrotem na Waiting. To samo id wraca wtedy
+        na łącze jako nowa próba - stąd attemptId.
     end note
 ```
 
@@ -399,9 +508,16 @@ sequenceDiagram
     R->>W: Log { jobId: J, attemptId: A, level: Info, wyjście metody }
     R->>W: JobReturn { id: J, attemptId: A, status: OK, data }
     deactivate R
+    R->>W: Log { jobId: J, attemptId: A, ... }
+    Note over R,W: wpisy zaległe w kolejce runnera<br/>docierają już po wyniku i wciąż się zapisują (§5.4)
     R->>W: Job (data = null)
-    Note over R,W: odpytanie: jestem wolny, przyślij pracę
+    Note over R,W: odpytanie: jestem wolny, przyślij pracę<br/>gdy nic nie czeka, Web nie odsyła nic
 ```
+
+Diagram pokazuje przebieg **udany i bez rozłączeń**. Log startowy idzie zawsze synchronicznie, ale
+kolejność pozostałych wpisów względem `JobReturn` zależy od tego, jak runner opróżnia kolejkę
+logów — u runnera referencyjnego robi to timer, więc końcówka wyjścia metody trafia na łącze już po
+wyniku.
 
 ---
 
@@ -427,102 +543,81 @@ liczb całkowitych.
 
 | Typ logiczny | Format na łączu | Przykład |
 | --- | --- | --- |
-| uuid (`id`, `jobId`) | kanoniczny UUID z myślnikami, małymi literami | `"a1b2c3d4-e5f6-7890-abcd-ef1234567890"` |
+| uuid (`id`, `jobId`, `attemptId`) | kanoniczny UUID z myślnikami, małymi literami | `"a1b2c3d4-e5f6-7890-abcd-ef1234567890"` |
+| nazwa runnera i metody (`name`) | zwykły ciąg znaków, porównywany **dokładnie** — z uwzględnieniem wielkości liter i znaków wiodących | `"resize-image"` ≠ `"Resize-Image"` |
 | znacznik czasu (`date`) | ISO-8601 z przesunięciem strefy czasowej; ułamki sekund opcjonalne | `"2026-06-12T14:30:00.123+00:00"` |
 | JSON Schema (`in`, `out`) | dokument JSON Schema przenoszony **jako ciąg znaków** | `"{\"type\":\"object\", … }"` |
-| wejście/wyjście zadania (`data` w `MessageJob`/`MessageJobReturn`) | nieprzezroczysty JSON przenoszony **jako ciąg znaków**; kształt definiowany per metoda przez `in`/`out`, a nie przez ten protokół | `"{\"width\":800}"` |
+| wejście/wyjście zadania (`data` w `MessageJob`/`MessageJobReturn`) | nieprzezroczysty JSON przenoszony **jako ciąg znaków** albo `null` (§5.2, §5.5); kształt definiowany per metoda przez `in`/`out`, a nie przez ten protokół | `"{\"width\":800}"` |
 
 ---
 
 ## 8. Przykład krok po kroku — bajty na łączu
 
-**Przydział Job** dla metody `resize-image` z wejściem `{"width":800,"height":600}`. Dokładna ramka
-tekstowa, którą wysyła Web:
+**Przydział Job** dla metody `resize-image` z wejściem `{"width":800,"height":600}`, wysłany jako
+próba `7f3e9c21-4b8a-4d15-9e62-0c5a7b1d8f34`. Dokładna ramka tekstowa, którą wysyła Web:
 
 ```
-{"type":"Job","data":"{\"id\":\"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\"name\":\"resize-image\",\"data\":\"{\\\"width\\\":800,\\\"height\\\":600}\"}"}
+{"type":"Job","data":"{\"id\":\"a1b2c3d4-e5f6-7890-abcd-ef1234567890\",\"attemptId\":\"7f3e9c21-4b8a-4d15-9e62-0c5a7b1d8f34\",\"name\":\"resize-image\",\"data\":\"{\\\"width\\\":800,\\\"height\\\":600}\"}"}
 ```
 
 Dekodowanie, poziom po poziomie:
 
-1. **Ramka → koperta:** `{ "type": "Job", "data": "{\"id\":\"a1b2…\",\"name\":\"resize-image\",\"data\":\"{\\\"width\\\":800,…}\"}" }`
-2. **Parsowanie `data` → `MessageJob`:** `{ "id": "a1b2…", "name": "resize-image", "data": "{\"width\":800,\"height\":600}" }`
+1. **Ramka → koperta:** `{ "type": "Job", "data": "{\"id\":\"a1b2…\",\"attemptId\":\"7f3e…\",\"name\":\"resize-image\",\"data\":\"{\\\"width\\\":800,…}\"}" }`
+2. **Parsowanie `data` → `MessageJob`:** `{ "id": "a1b2…", "attemptId": "7f3e…", "name": "resize-image", "data": "{\"width\":800,\"height\":600}" }`
 3. **Parsowanie `MessageJob.data` → wejście:** `{ "width": 800, "height": 600 }`
 
-Każdy fixture w katalogu [`fixtures/`](./fixtures/) to jedna taka dokładna ramka.
+To ta sama ramka, którą niesie [`fixtures/job-dispatch.json`](./fixtures/job-dispatch.json); każdy
+fixture w katalogu [`fixtures/`](./fixtures/) to jedna taka dokładna ramka.
 
 ---
 
 ## 9. Wersjonowanie i zgodność
 
-- To jest **v2**, opisowa wobec bieżącej implementacji referencyjnej.
-- **Co zmieniło v2 wobec v1** — wszystko wokół jednego problemu: `id` zadania nie wystarczało, żeby
-  odróżnić bieżącą wysyłkę od poprzedniej, a przydział, który przepadł przy otwartym gnieździe, nie
-  miał jak wrócić do kolejki.
-  - `attemptId` w `Job`, `Log` i `JobReturn` — **pole wymagane**, więc v1 i v2 nie są zgodne
-    w żadną stronę.
-  - Nowy komunikat `JobAccepted` i nowa wartość `JobAccepted` w wyliczeniu `type`.
-  - Termin potwierdzenia przydziału, obowiązujący niezależnie od stanu połączenia (§5.3).
-  - Web trzyma u runnera najwyżej jedno nierozstrzygnięte zadanie (§5.2).
-- **Negocjacja wersji** odbywa się podczas uzgadniania połączenia przez nagłówek
-  `X-Zapqio-Protocol-Version` (§3): runner wysyła swoją wersję główną, a serwer akceptuje wyłącznie
-  wersje, które obsługuje, odpowiadając w przeciwnym razie **426 Upgrade Required**. Brak nagłówka
-  jest nadal traktowany jak `1`, ale odkąd serwer mówi `2`, oznacza to odmowę — runner sprzed
-  wersjonowania nie połączy się już wcale.
-- Zasady zgodności dla przyszłych rewizji: dodanie pola **opcjonalnego** jest zgodne wstecz;
-  usunięcie lub zmiana nazwy pola, albo zmiana ciągu wyliczenia, **łamie zgodność** i wymaga
-  podniesienia wersji.
-- Nowy **kod odrzucenia** uzgadniania nie łamie zgodności i nie podnosi wersji głównej — tak samo
-  weszło **429** (§3). Runner POWINIEN więc traktować każdy nieznany status inny niż 101 jako odmowę
-  i wycofać się narastająco, zamiast ponawiać natychmiast albo uznać połączenie za nawiązane.
+Każda zmiana **zachowania na łączu** — kształtu wiadomości, wartości wyliczeń albo reguł ich wymiany
+— podnosi **wersję główną** protokołu, tę, którą deklaruje §1. Poprawki redakcyjne, opisujące
+dokładniej zachowanie, które i tak już obowiązuje, wersji nie ruszają.
+
+Wersje nie są ze sobą zgodne. Runner mówiący inną wersją niż serwer dostaje przy uzgadnianiu
+połączenia **426 Upgrade Required** (§3) i nie połączy się w ogóle, dopóki nie zostanie
+zaktualizowany. Podniesienie wersji zawsze oznacza więc aktualizację runnerów.
 
 ---
 
 ## 10. Zgodność ze specyfikacją
 
-Implementacja jest zgodna, jeżeli potrafi zarówno **wyprodukować**, jak i **skonsumować** każdy
-fixture z katalogu [`fixtures/`](./fixtures/) w taki sposób, że po pełnym zdekodowaniu (ramka →
+Słowa **MUSI**, **NIE WOLNO**, **POWINIEN** i **MOŻE** (wraz z formami liczby mnogiej i rodzaju) są
+w tym dokumencie użyte w rozumieniu RFC 2119 i odpowiadają angielskim MUST, MUST NOT, SHOULD i MAY.
+Różnica jest tu istotna: od reguły zapisanej przez POWINIEN wolno świadomie odstąpić, a reguła
+zapisana przez MUSI albo NIE WOLNO jest warunkiem zgodności.
+
+Zgodność ma **dwie połowy** i tylko pierwszą da się sprawdzić maszynowo.
+
+**Łącze.** Implementacja jest zgodna, jeżeli potrafi zarówno **wyprodukować**, jak i **skonsumować**
+każdy fixture z katalogu [`fixtures/`](./fixtures/) w taki sposób, że po pełnym zdekodowaniu (ramka →
 koperta → ładunek → zagnieżdżone wejście/wyjście zadania) zawartość logiczna jest równa zawartości
-udokumentowanej dla danego fixture'a.
+udokumentowanej dla danego fixture'a, oraz jeżeli jej ładunki przechodzą walidację wobec
+[`schemas.json`](./schemas.json). Fixture'y i schematy są częścią specyfikacji na równi z tym
+dokumentem — czytaj je z repozytorium, nie przepisuj ich treści do siebie.
 
 Porównanie jest **semantyczne** (sparsowane struktury są głęboko równe), a **nie bajt w bajt**:
 nieznaczące białe znaki i kolejność kluczy w obiektach nie mają znaczenia. Producenci POWINNI mimo to
 emitować wielkość liter w nazwach pól oraz ciągi wyliczeń dokładnie tak, jak określono, ponieważ nie
 każdy konsument jest pobłażliwy.
 
----
+**Zachowanie.** Żaden fixture ani schemat nie dowodzi, że implementacja przestrzega reguł przepływu —
+a bez nich zadania giną albo wykonują się dwa razy, mimo że każda pojedyncza ramka jest poprawna.
+Zgodność wymaga zatem także tych reguł, sprawdzalnych wyłącznie przeglądem kodu:
 
-## 11. Mapa implementacji referencyjnej
+- uzgadnianie połączenia i reakcja na jego kody odmowy, w tym wycofywanie się po `429` (§3);
+- potwierdzanie przydziału natychmiast po odebraniu i dotrzymanie terminu (§5.3);
+- log startowy wysłany **przed** wywołaniem metody, z pominięciem bufora (§5.4);
+- przepisywanie `attemptId` z przydziału do potwierdzenia, każdego logu i wyniku (§5.2–5.5);
+- zakolejkowanie przydziału zamiast jego odrzucenia (§5.2).
 
-Ten dokument, wraz z [`schemas.json`](./schemas.json) i [`fixtures/`](./fixtures/), jest źródłem
-prawdy: kod .NET jest **jedną** z implementacji, a nie definicją protokołu.
+Rozbieżność między implementacją a którymkolwiek z tych punktów traktuj jako błąd wart zgłoszenia, a
+nie jako stan uzgodniony.
 
-Reguły **łącza** są sprawdzane automatycznie. Oba wiązania .NET — `Zapqio.Runner.Protocol` w runnerze
-referencyjnym i `Zapqio.Protocol` w Web — mają zestaw testów zgodności, który konsumuje i produkuje
-każdy fixture oraz waliduje ładunki wobec `schemas.json`, czytając te pliki, a nie kopię ich treści.
-Zmieniona nazwa pola, inna wartość wyliczenia albo zgubiona warstwa kodowania kończy się tam błędem.
-Reguły **zachowania** nie są objęte tymi testami: uzgadnianie połączenia i jego kody odrzucenia (§3),
-cykl życia zadania (§5.2), potwierdzanie przydziału i jego termin (§5.3), wymóg logu przed
-wywołaniem (§5.4) oraz okno przyjmowania wyniku (§5.5) są
-weryfikowane wyłącznie przeglądem kodu, więc każdą rozbieżność między kodem a specyfikacją w tych
-punktach traktuj jako błąd wart zgłoszenia, a nie jako stan uzgodniony.
-
-Runner referencyjny jest **klientem** WebSocket i znajduje się w `github.com/zapqio/runner-dotnet`.
-Jego układ, dla czytelników, którzy chcą zobaczyć daną regułę w działającym kodzie — Web ma własne
-wiązanie tych samych typów wiadomości w `Zapqio.Protocol`:
-
-| Zagadnienie | Plik |
-| --- | --- |
-| Koperta + opcje JSON (camelCase, wyliczenia jako ciągi) | `Zapqio.Runner.Protocol/Message.cs`, `Zapqio.Runner.Protocol/JsonDefaults.cs` |
-| Kształty ładunków | `Zapqio.Runner.Protocol/Message{Info,Method,Job,JobReturn,Log}.cs` |
-| Definicje wyliczeń | `Zapqio.Runner.Protocol/Enums/Message{Type,LogLevel,ResponseStatus}.cs` |
-| Stała negocjowanej wersji | `Zapqio.Runner.Protocol/ProtocolVersion.cs` |
-| Zestaw testów zgodności (fixture'y + schematy) | `Zapqio.Runner.Protocol.Tests/` |
-| Uzgadnianie połączenia i wysyłka (klient) | `Zapqio.Runner/WSClient.cs` |
-| Pętla runnera (Info, odpytanie, przydział) | `Zapqio.Runner/Background/RequestBindBackground.cs` |
-| Kolejka logów i kadencja opróżniania | `Zapqio.Runner/Background/SendLogsBackground.cs`, `Zapqio.Runner/LogQueue.cs`, `Zapqio.Runner/ScopedConsole.cs` |
-
-Strona **serwera** (Web) nie jest częścią tego repozytorium. Wszystko, czego runner potrzebuje do
-współpracy z nim, jest określone tutaj: uzgadnianie połączenia i jego kody odrzucenia (§3), koperta
-(§4), zestaw wiadomości i ich kierunki (§5) oraz zasady negocjacji wersji (§9). Nie wolno polegać na
-żadnym zachowaniu serwera wykraczającym poza ten dokument.
+**Poza tym dokumentem nie ma nic.** Wszystko, czego runner potrzebuje do współpracy z Web, jest
+określone tutaj: uzgadnianie połączenia i jego kody odmowy (§3), koperta (§4), zestaw wiadomości i
+ich kierunki (§5) oraz zasady wersjonowania (§9). NIE WOLNO polegać na żadnym zachowaniu serwera
+wykraczającym poza te reguły — nie jest ono obietnicą i może zniknąć bez podniesienia wersji.
