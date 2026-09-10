@@ -257,7 +257,12 @@ jej nie zapisuje.
   }
   ```
 
-  - `id`   — unikalny identyfikator zadania; odeślij go w `JobAccepted`, `Log` i `JobReturn`.
+  - `id`   — identyfikator **operacji**: stały między wysyłkami tego samego zadania i po ponowieniu
+    przez człowieka (zmienia się tylko `attemptId`). Odeślij go w `JobAccepted`, `Log` i `JobReturn`.
+    Runner, którego metoda ma skutek nieidempotentny (faktura, mail, przelew), POWINIEN zapisać
+    `id` razem ze skutkiem i przed wykonaniem sprawdzić, czy skutek z tym `id` już istnieje — Web
+    wysyła zadanie ponownie tylko wtedy, gdy nie wie, czy poprzednia próba doszła do końca (§5.4),
+    więc to `id` jest kluczem, po którym runner rozpoznaje powtórkę.
   - `attemptId` — identyfikator **tej wysyłki**. To samo zadanie może zostać wysłane kilka razy;
     `id` się wtedy nie zmienia, a `attemptId` za każdym razem jest inny. Odeślij go **niezmieniony**
     w `JobAccepted`, w **każdym** `Log` i w `JobReturn` tego zadania.
@@ -382,8 +387,12 @@ Strumieniowane w trakcie wykonywania zadania. Ładunek — `MessageLog`:
 **Pierwszy** `Log` dla zadania przełącza je po stronie serwera ze stanu *Dispatched* na *Executing*.
 To przejście decyduje o tym, jak odzyskiwane jest zadanie utracone: jeśli runner rozłączy się bez
 wysłania `JobReturn`, zadanie wciąż w stanie *Dispatched* uznaje się za nierozpoczęte i wraca ono do
-kolejki, natomiast zadanie już w *Executing* kończy się błędem zamiast zostać uruchomione ponownie —
-jego efekt uboczny mógł już nastąpić.
+kolejki, natomiast zadanie już w *Executing* przechodzi w stan *OutcomeUnknown* („wynik nieznany")
+zamiast wrócić do kolejki — jego efekt uboczny mógł już nastąpić, a Web nie wie, czy nastąpił. Taki
+krok ponawia dopiero człowiek, świadomie potwierdzając, że skutek może się powtórzyć (w ten sam stan
+Web wprowadza też zadanie, które trwa dłużej niż limit czasu kroku ustawiony na potoku - liczony od
+tego pierwszego `Log`; runner nie jest o tym powiadamiany i może dokończyć pracę); do tego czasu
+Web wciąż przyjmie `JobReturn` **tej samej próby**, jeśli runner wróci z wynikiem (§5.5).
 
 Runner MUSI zatem wysłać wiersz startowy `Log` **przed** wywołaniem metody i MUSI wysłać go
 natychmiast, z pominięciem swojego bufora logów. Runner, który buforuje wiersz startowy, może wykonać
@@ -423,10 +432,18 @@ Wysyłane **raz**, gdy zadanie się zakończy. Ładunek — `MessageJobReturn`:
   po `ERROR` kolejny krok się nie uruchamia.
 
 Web przyjmuje wynik tylko wtedy, gdy spełnione są **wszystkie trzy** warunki: `attemptId` wskazuje
-bieżącą próbę zadania, zadanie jest wciąż w stanie *Dispatched* albo *Executing*, a wynik przyszedł
-od tego runnera, któremu zadanie przydzielono. Wynik, na którym Web postawił krzyżyk —
-zakolejkowanego ponownie albo zakończonego błędem z powodu utraty runnera (§5.4) — zostaje
-**odrzucony**, ze śladem w logu zadania; uruchomienie pipeline'u nie posuwa się przez niego dalej.
+bieżącą próbę zadania, zadanie jest w stanie *Dispatched*, *Executing* albo *OutcomeUnknown*, a wynik
+przyszedł od tego runnera, któremu zadanie przydzielono. Wynik zadania zakolejkowanego ponownie
+(nowa próba, inny `attemptId`) albo ponowionego przez człowieka zostaje **odrzucony**, ze śladem
+w logu zadania; uruchomienie pipeline'u nie posuwa się przez niego dalej.
+
+Stan *OutcomeUnknown* jest w tym oknie celowo. Web wchodzi w niego, gdy utracił runnera po logu
+startowym (§5.4): nie wie wtedy, czy metoda dobiegła końca. Runner, który wrócił, wie — więc jego
+`JobReturn` z **tym samym** `attemptId` jest przyjmowany i zamyka zadanie tak, jakby przyszedł na
+czas: `OK` przekazuje wyjście dalej, `ERROR` kończy je błędem. Dlatego runner, który po zerwaniu
+sesji ma niewysłany `JobReturn`, POWINIEN wysłać go po wznowieniu połączenia, z niezmienionym
+`attemptId`. Gdy w międzyczasie człowiek ponowił zadanie, `attemptId` już się nie zgadza i wynik
+jest odrzucany jak każdy inny spóźniony.
 
 Warunek na `attemptId` jest tym, który zamyka lukę: sam status wystarczał tylko dopóki zadanie
 zostawało w stanie końcowym. Po ponownej wysyłce tego samego zadania status znów jest *Dispatched*
@@ -434,11 +451,12 @@ albo *Executing*, więc spóźniony wynik poprzedniej próby przechodziłby prze
 wynik próby trwającej.
 
 Runner nie może więc zakładać, że `JobReturn`, który udało mu się wypchnąć na łącze, został
-uwzględniony, a ponowne wysłanie wyniku po wznowieniu połączenia nie odzyskuje zadania, które Web
-już odpisał.
+uwzględniony. Ponowne wysłanie wyniku po wznowieniu połączenia odzyskuje zadanie tylko wtedy, gdy
+Web wciąż trzyma je w *OutcomeUnknown* — zadania zakolejkowanego ponownie albo ponowionego przez
+człowieka już nie.
 
 Cykl życia zadania po stronie Web, złożony z reguł §5.2–5.5. Etykiety stanów to wartości
-`RunnerJobStatus` wraz z numerem, pod którym są utrwalane:
+`StepStatus` wraz z numerem, pod którym są utrwalane:
 
 ```mermaid
 stateDiagram-v2
@@ -447,20 +465,30 @@ stateDiagram-v2
     state "Executing = 2" as Executing
     state "Ok = 3" as Ok
     state "Error = 4" as Error
+    state "OutcomeUnknown = 5" as OutcomeUnknown
+    state "Cancelled = 6" as Cancelled
 
     [*] --> Waiting
     Waiting --> Dispatched: Web wypycha Job (dyspozytor co ok. 10 s albo odpowiedź na odpytanie)
     Dispatched --> Executing: pierwszy Log dla zadania
     Dispatched --> Waiting: runner rozłączony / nierozpoczęte, wraca do kolejki
     Dispatched --> Waiting: brak JobAccepted w terminie 60 s
-    Executing --> Error: runner rozłączony / efekt uboczny mógł już nastąpić
+    Executing --> OutcomeUnknown: runner rozłączony po starcie / efekt uboczny mógł już nastąpić
     Executing --> Ok: JobReturn ze status OK
     Executing --> Error: JobReturn ze status ERROR
     Dispatched --> Ok: JobReturn bez logu startowego (runner łamie §5.4)
     Dispatched --> Error: JobReturn bez logu startowego (runner łamie §5.4)
+    OutcomeUnknown --> Ok: spóźniony JobReturn OK tej samej próby
+    OutcomeUnknown --> Error: spóźniony JobReturn ERROR tej samej próby
+    OutcomeUnknown --> Waiting: ponowienie potwierdzone przez człowieka
     Error --> Waiting: ponowienie zlecone przez człowieka
+    Waiting --> Cancelled: człowiek anulował uruchomienie (tylko po stronie Web, runner nic nie dostaje)
+    Error --> Cancelled: człowiek anulował uruchomienie
+    OutcomeUnknown --> Cancelled: człowiek anulował uruchomienie; spóźniony JobReturn jest już odrzucany
     Ok --> [*]
     Error --> [*]
+    OutcomeUnknown --> [*]
+    Cancelled --> [*]
 
     note right of Dispatched
         JobAccepted nie zmienia stanu - odnotowuje
@@ -483,6 +511,16 @@ stateDiagram-v2
         zlecić ponowienie, które przestawia zadanie
         z powrotem na Waiting. To samo id wraca wtedy
         na łącze jako nowa próba - stąd attemptId.
+    end note
+
+    note right of OutcomeUnknown
+        Runner zniknął po logu startowym, więc Web
+        nie wie, czy metoda dobiegła końca. Wynik
+        tej samej próby, który dotrze po powrocie
+        runnera, jest wciąż przyjmowany i zamyka
+        zadanie. Ponowienie wymaga od człowieka
+        jawnego potwierdzenia, bo może powtórzyć
+        skutek, który już nastąpił.
     end note
 ```
 
