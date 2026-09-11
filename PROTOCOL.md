@@ -209,7 +209,8 @@ metody, które udostępnia. Ładunek — `MessageInfo`:
   "name": "build-agent-01",
   "methods": [
     { "name": "resize-image", "in": "{\"type\":\"object\", … }", "out": "{\"type\":\"object\", … }" }
-  ]
+  ],
+  "maxConcurrency": 4
 }
 ```
 
@@ -218,6 +219,16 @@ metody, które udostępnia. Ładunek — `MessageInfo`:
   - `name` — nazwa metody; zadania są do niej kierowane po tej nazwie.
   - `in`  — **JSON Schema** opisujący **wejście** metody, przenoszony *jako ciąg znaków*, albo `null`.
   - `out` — **JSON Schema** opisujący **wyjście** metody, przenoszony *jako ciąg znaków*, albo `null`.
+- `maxConcurrency` — **pojemność** runnera: ile zadań wykonuje naraz, a więc ile nierozstrzygniętych
+  zadań Web może u niego trzymać jednocześnie (§5.2). Liczba całkowita, co najmniej `1`. Pole jest
+  **opcjonalne**: runner, który je pomija, wykonuje jedno zadanie naraz i Web traktuje go jak
+  `maxConcurrency: 1` — tak zachowują się runnery sprzed tego pola. Web MOŻE ograniczyć zadeklarowaną
+  wartość od góry (serwer referencyjny przycina do 32); runner nie dostanie więcej, niż zadeklarował,
+  ale może dostać mniej.
+
+**Pojemność jest własnością runnera, nie ustawieniem po stronie Web.** To runner wie, ile ma
+rdzeni i czy jego metody znoszą równoległe wywołania — dlatego deklaruje ją sam, a Web ją tylko
+przyjmuje. Runner, którego metody nie są bezpieczne wątkowo, MUSI zostać przy `1` (albo pominąć pole).
 
 Web zapisuje listę metod; interfejs użytkownika używa `in`/`out` do renderowania i walidacji wejścia
 oraz wyjścia zadań w pipeline.
@@ -233,8 +244,10 @@ zmienić **w trakcie życia procesu**. Runner referencyjny do nich nie należy: 
 starcie, więc ich podmiana wymaga restartu — a restart wysyła `Info` sam z siebie. Dlatego wystarcza
 mu jedno `Info` na proces.
 
-Zapisane metody **przeżywają rozłączenie**, więc samo wznowienie połączenia nie wymaga powtarzania
-`Info`; kierowanie zadań działa dalej na tym, co Web ma zapisane w rekordzie runnera.
+Zapisane metody i pojemność **przeżywają rozłączenie**, więc samo wznowienie połączenia nie wymaga
+powtarzania `Info`; kierowanie zadań działa dalej na tym, co Web ma zapisane w rekordzie runnera.
+Runner, który zmienia pojemność (np. po zmianie konfiguracji), ogłasza ją nowym `Info` — u runnera
+referencyjnego zmiana konfiguracji wymaga restartu, więc dzieje się to samo z siebie.
 
 `name` w ładunku jest **informacyjne**. O tożsamości rozstrzyga uzgadnianie połączenia (§3) i to
 nazwa stamtąd wiąże się z rekordem runnera; Web nie porównuje z nią wartości przysłanej w `Info` ani
@@ -282,29 +295,43 @@ jej nie zapisuje.
 > obiektu `MessageJob`, a `MessageJob.data` jest *znowu* ciągiem znaków zawierającym JSON wejścia
 > zadania. To dwa poziomy kodowania tekstowego ponad samą ramką.
 
-**Rozruch i kadencja.** Po `Info` runner blokuje się na odbiorze; **pierwsze** zadanie przychodzi z
-dyspozytora działającego w tle po stronie Web, który rusza 30 s po starcie Web, a potem chodzi co
-ok. 10 s. Runner wykonuje **jedno zadanie naraz** i po zakończeniu każdego zadania wysyła
+**Rozruch i kadencja.** Po `Info` runner czeka na odbiorze; **pierwsze** zadanie przychodzi z
+dyspozytora działającego w tle po stronie Web, który rusza 30 s po starcie Web, a potem budzi się przy
+każdym zdarzeniu dającym nowe zadanie (uruchomienie, wynik, ponowienie, powrót do kolejki) i nie
+rzadziej niż co ok. 10 s. Runner wykonuje naraz najwyżej tyle zadań, ile zadeklarował w
+`maxConcurrency` (§5.1), a po zakończeniu każdego zadania, jeśli ma wolne miejsce, wysyła
 **odpytanie Job**, aby pobrać kolejne.
 
-Runner MOŻE wysłać odpytanie **od razu po `Info`**, nie czekając na dyspozytora — odpytanie znaczy
-tylko „jestem wolny". Bez tego pierwsze zadanie po starcie Web czeka do ok. 40 s (30 s rozruchu plus
-tyknięcie), co przy krótkim pipelinie wygląda jak awaria. Runner referencyjny tego nie robi i czeka.
+Runner POWINIEN wysłać odpytanie **od razu po `Info`** i po każdym ponownym połączeniu, gdy ma wolne
+miejsce, nie czekając na dyspozytora — odpytanie znaczy tylko „mam wolne miejsce". Bez tego pierwsze
+zadanie po starcie Web czeka do ok. 40 s (30 s rozruchu plus tyknięcie), co przy krótkim pipelinie
+wygląda jak awaria. Runner referencyjny tak robi.
 
-**Jeden przydział naraz.** Web trzyma u runnera **najwyżej jedno nierozstrzygnięte zadanie**: dopóki
-poprzednie nie skończy się `JobReturn`, nie wróci do kolejki ani nie zostanie zamknięte błędem,
-kolejne nie wychodzi — ani z dyspozytora, ani w odpowiedzi na odpytanie. Runner zastaje więc przydział
-zawsze wtedy, gdy jest wolny.
+**Pojemność, czyli ile przydziałów naraz.** Web trzyma u runnera **najwyżej `maxConcurrency`
+nierozstrzygniętych zadań**: zadanie jest nierozstrzygnięte od wysłania przydziału, aż skończy się
+`JobReturn`, wróci do kolejki albo zostanie zamknięte bez wyniku. Kolejny przydział wychodzi dopiero,
+gdy liczba nierozstrzygniętych spadnie poniżej pojemności — ani dyspozytor, ani odpowiedź na odpytanie
+nie przekraczają tej liczby. Runner bez `maxConcurrency` ma pojemność `1` i zastaje przydział zawsze
+wtedy, gdy jest wolny. Odpytanie nie niesie liczby wolnych miejsc: Web sam ją liczy z pojemności i
+tego, co u runnera trzyma.
 
-To nie jest wyłącznie kwestia wydajności. Przydział musi zostać potwierdzony komunikatem
-`JobAccepted` w terminie (§5.3), a runner, który na czas wykonywania metody przestaje czytać gniazdo —
-tak robi implementacja referencyjna — potwierdziłby drugi przydział dopiero po skończeniu pierwszego.
-Termin musiałby wtedy przekraczać czas najdłuższej metody, czyli w praktyce nie ograniczałby niczego.
-Limit jednego zadania sprawia, że potwierdzenie przychodzi od razu i termin może być krótki.
+Web może wysłać kilka przydziałów **jeden po drugim, bez czekania** na potwierdzenie poprzedniego —
+tyle, ile ma wolnych miejsc. Kolejność wykonania w obrębie jednego uruchomienia pipeline'u zostaje
+sekwencyjna (krok następny dostaje wejście z poprzedniego), więc równolegle idą zadania **różnych**
+uruchomień, także tego samego pipeline'u.
 
-Runnerowi mimo to **NIE WOLNO** odrzucić przydziału. Jeśli mimo limitu przyjdzie drugi — bo Web jest
-w trakcie wdrożenia albo doszło do wyścigu — MUSI go zakolejkować u siebie i wykonać, gdy zwolni się
-miejsce. Odrzucony przydział przepada: nic go nie wyśle ponownie przed upływem terminu.
+**Runner MUSI czytać gniazdo i potwierdzać przydziały przez cały czas, także gdy wszystkie jego
+miejsca pracują.** Przydział musi zostać potwierdzony komunikatem `JobAccepted` w terminie (§5.3),
+a termin biegnie od wysłania, niezależnie od tego, czy runner ma wolne miejsce. Potwierdzenie mówi
+„mam i wykonam", a nie „ruszyłem" — o starcie mówi log startowy (§5.4). Implementacja, która
+odbiór i potwierdzanie wiąże z pętlą wykonania (np. potwierdza dopiero, gdy zwolni się miejsce),
+przy zadaniach dłuższych niż termin wpada w pętlę: Web zwraca niepotwierdzone zadanie do kolejki,
+wysyła je ponownie, runner kolejkuje kolejną próbę tego samego zadania i tak w kółko.
+
+Runnerowi **NIE WOLNO** odrzucić przydziału. Jeśli przyjdzie przydział ponad pojemność — bo Web jest w
+trakcie wdrożenia, pojemność zmieniła się w locie albo doszło do wyścigu — runner MUSI go potwierdzić,
+zakolejkować u siebie i wykonać, gdy zwolni się miejsce. Odrzucony przydział przepada: nic go nie
+wyśle ponownie przed upływem terminu.
 
 **Koniec sesji kasuje tę kolejkę.** Zadania, które u runnera czekają nierozpoczęte, są po stronie Web
 w stanie *Dispatched* — po zniknięciu połączenia wracają do kolejki i zostaną wysłane ponownie.
@@ -611,9 +638,16 @@ fixture w katalogu [`fixtures/`](./fixtures/) to jedna taka dokładna ramka.
 
 ## 9. Wersjonowanie i zgodność
 
-Każda zmiana **zachowania na łączu** — kształtu wiadomości, wartości wyliczeń albo reguł ich wymiany
-— podnosi **wersję główną** protokołu, tę, którą deklaruje §1. Poprawki redakcyjne, opisujące
-dokładniej zachowanie, które i tak już obowiązuje, wersji nie ruszają.
+Każda zmiana **łamiąca** zachowanie na łączu — usunięcie albo zmiana znaczenia pola, zmiana wartości
+wyliczeń, reguła, której stara implementacja nie spełni — podnosi **wersję główną** protokołu, tę,
+którą deklaruje §1. Poprawki redakcyjne, opisujące dokładniej zachowanie, które i tak już obowiązuje,
+wersji nie ruszają.
+
+Wersji nie rusza też zmiana **addytywna**: nowe pole **opcjonalne**, którego brak znaczy dokładnie to,
+co obowiązywało przed jego wprowadzeniem. Stara implementacja, która pola nie wysyła, zachowuje się
+jak dotąd; stara implementacja, która pola nie zna, MUSI je zignorować (konsumenci NIE WOLNO
+odrzucać ładunku z nieznanym polem). Tak zostało dodane `maxConcurrency` w `Info` (§5.1): runner bez
+niego ma pojemność `1`, czyli tyle, ile dawała dawna reguła jednego zadania naraz.
 
 Wersje nie są ze sobą zgodne. Runner mówiący inną wersją niż serwer dostaje przy uzgadnianiu
 połączenia **426 Upgrade Required** (§3) i nie połączy się w ogóle, dopóki nie zostanie
@@ -647,10 +681,13 @@ a bez nich zadania giną albo wykonują się dwa razy, mimo że każda pojedyncz
 Zgodność wymaga zatem także tych reguł, sprawdzalnych wyłącznie przeglądem kodu:
 
 - uzgadnianie połączenia i reakcja na jego kody odmowy, w tym wycofywanie się po `429` (§3);
-- potwierdzanie przydziału natychmiast po odebraniu i dotrzymanie terminu (§5.3);
+- potwierdzanie przydziału natychmiast po odebraniu i dotrzymanie terminu (§5.3), **także gdy
+  wszystkie miejsca pracują** — odbiór i potwierdzanie nie mogą czekać na wolne miejsce (§5.2);
 - log startowy wysłany **przed** wywołaniem metody, z pominięciem bufora (§5.4);
 - przepisywanie `attemptId` z przydziału do potwierdzenia, każdego logu i wyniku (§5.2–5.5);
-- zakolejkowanie przydziału zamiast jego odrzucenia (§5.2).
+- zakolejkowanie przydziału zamiast jego odrzucenia (§5.2);
+- deklarowanie w `maxConcurrency` tylko takiej pojemności, jaką runner naprawdę obsłuży
+  równolegle (§5.1) — Web bierze tę liczbę za dobrą monetę.
 
 Rozbieżność między implementacją a którymkolwiek z tych punktów traktuj jako błąd wart zgłoszenia, a
 nie jako stan uzgodniony.

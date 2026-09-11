@@ -22,7 +22,8 @@ potwierdzenie, oba logi i oba warianty wyniku — dokładnie tak, jak wymaga teg
 
 | Fixture | Kier. | Znaczenie po zdekodowaniu |
 | --- | --- | --- |
-| `info.json` | R→W | Runner ogłasza nazwę `build-agent-01` i jedną metodę `resize-image` ze schematem JSON wejścia (`width`, `height`) oraz wyjścia (`url`). |
+| `info.json` | R→W | Runner ogłasza nazwę `build-agent-01`, jedną metodę `resize-image` ze schematem JSON wejścia (`width`, `height`) oraz wyjścia (`url`) i pojemność `maxConcurrency=4` (cztery zadania naraz). |
+| `info-sequential.json` | R→W | To samo `Info` **bez** `maxConcurrency` — tak wysyła runner sprzed tego pola albo runner wykonujący jedno zadanie naraz. Konsument MUSI odczytać je jako pojemność `1`. |
 | `job-poll.json` | R→W | Odpytanie: `type=Job`, `data=null` („przyślij mi pracę”). |
 | `job-dispatch.json` | W→R | Przydział zadania `a1b2…` jako próba `7f3e…` → metoda `resize-image`, wejście `{ "width": 800, "height": 600 }`. |
 | `job-accepted.json` | R→W | Potwierdzenie odbioru przydziału `a1b2…` / `7f3e…`. |

@@ -28,7 +28,12 @@
       "additionalProperties": false,
       "properties": {
         "name": { "type": "string", "description": "Runner name (same as X-Zapqio-Name)." },
-        "methods": { "type": "array", "items": { "$ref": "#/$defs/messageMethod" } }
+        "methods": { "type": "array", "items": { "$ref": "#/$defs/messageMethod" } },
+        "maxConcurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many jobs the runner executes at once, i.e. how many unresolved jobs Web may keep at it (PROTOCOL.md §5.1, §5.2). Optional: a runner that omits it executes one job at a time. Web may cap the value."
+        }
       }
     },
     "messageMethod": {
