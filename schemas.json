@@ -28,6 +28,8 @@
       "additionalProperties": false,
       "properties": {
         "name": { "type": "string", "description": "Runner name (same as X-Zapqio-Name)." },
+        "processInstanceId": { "type": "string", "format": "uuid" },
+        "activeAttemptIds": { "type": "array", "items": { "type": "string", "format": "uuid" }, "uniqueItems": true },
         "methods": { "type": "array", "items": { "$ref": "#/$defs/messageMethod" } },
         "maxConcurrency": {
           "type": "integer",
