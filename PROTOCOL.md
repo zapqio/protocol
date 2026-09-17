@@ -7,7 +7,7 @@ Każdy runner — w dowolnym języku — który jest zgodny z tym dokumentem, mo
 
 ## 1. Przegląd
 
-To jest **v2** protokołu — wersja główna, którą runner deklaruje przy uzgadnianiu połączenia (§3), a
+To jest **v3** protokołu — wersja główna, którą runner deklaruje przy uzgadnianiu połączenia (§3), a
 której zasady podnoszenia opisuje §9.
 
 **Runner** jest **klientem** WebSocket. **Web** jest **serwerem** WebSocket. Runner nawiązuje
@@ -406,7 +406,9 @@ Strumieniowane w trakcie wykonywania zadania. Ładunek — `MessageLog`:
 - `jobId`   — zadanie, do którego należy dany wpis logu.
 - `attemptId` — `attemptId` z przydziału tego zadania (§5.2). Wpis z niezgodnym `attemptId` należy do
   próby, którą Web już zamknął, i zostaje odrzucony.
-- `level`   — `Info` albo `Error` (§6).
+- `level`   — jeden z `Debug`, `Info`, `Warning`, `Error`, `Critical` (§6). Konsument, który
+  rozróżnia mniej poziomów, MUSI przyjąć wpis mimo to — mapując nieznany poziom na najbliższy
+  znany, a nie odrzucając ładunku.
 - `message` — treść logu.
 - `date`    — znacznik czasu ISO-8601 z przesunięciem strefy czasowej (§7). Pochodzi z zegara runnera
   i Web zapisuje go bez korekty, więc to ten zegar ustala kolejność wpisów w historii zadania.
@@ -426,16 +428,21 @@ natychmiast, z pominięciem swojego bufora logów. Runner, który buforuje wiers
 efekt uboczny i ulec awarii przed kolejnym opróżnieniem kolejki; zadanie zostanie wtedy w stanie
 *Dispatched*, a Web wykona je po raz drugi.
 
-Runner referencyjny przechwytuje `stdout` metody→`Info` oraz `stderr`→`Error`, a także ów wiersz
-startowy i ewentualny wyjątek. Wiersz startowy jest wysyłany synchronicznie, przed wywołaniem;
-pozostałe wpisy są opróżniane z kolejki na timerze co ok. 2 s, **jedna wiadomość WS na wpis**.
+Runner referencyjny daje metodzie dwa sposoby na wpis. Pierwszy działa bez żadnego API: `stdout`
+metody trafia na `Info`, a `stderr` na `Error`. Drugi pozwala nazwać poziom wprost i dopiero on
+sięga po `Debug`, `Warning` i `Critical`. Do tego runner dokłada od siebie wiersz startowy i
+ewentualny wyjątek. Wiersz startowy jest wysyłany synchronicznie, przed wywołaniem; pozostałe wpisy
+idą przez wspólną kolejkę FIFO, którą opróżnia jeden nadawca, **jedna wiadomość WS na wpis**.
 
 **Log przyjęty po `JobReturn` wciąż się zapisuje.** O przyjęciu wpisu decyduje wyłącznie zgodność
 `attemptId` — status zadania nie jest tu sprawdzany, inaczej niż przy wyniku (§5.5). Wiersze, które
 runner opróżnia z kolejki już po odesłaniu wyniku, trafiają więc do historii normalnie. Kolejność
 logów względem `JobReturn` nie jest zatem niczym zagwarantowana i interfejs potrafi pokazać zadanie
 jako zakończone, gdy wiersze wciąż dochodzą. Runner, dla którego to problem, POWINIEN opróżnić kolejkę
-logów **przed** wysłaniem `JobReturn` — runner referencyjny tego nie robi, bo opróżnia ją na timerze.
+logów **przed** wysłaniem `JobReturn`. Runner referencyjny osiąga to bez osobnego kroku: logi i wynik
+dzielą jedną kolejkę FIFO, więc wszystko, co metoda zdążyła napisać, wychodzi przed jej wynikiem.
+Wpisy z wątków, które metoda zostawiła działające po swoim zakończeniu, przychodzą po wyniku jak
+każde inne spóźnione — i zapisują się normalnie, bo zgadza się `attemptId`.
 
 ### 5.5 JobReturn (R→W)
 
@@ -595,7 +602,7 @@ literami, a NIE w camelCase**. Producenci MUSZĄ emitować dokładnie te ciągi:
 | Pole | Dozwolone wartości |
 | --- | --- |
 | `type` wiadomości  | `Info`, `Job`, `JobAccepted`, `JobReturn`, `Log` |
-| `level` w Log      | `Info`, `Error` |
+| `level` w Log      | `Debug`, `Info`, `Warning`, `Error`, `Critical` |
 | `status` w JobReturn | `OK`, `ERROR` |
 
 Referencyjny *deserializator* .NET akceptuje przy odczycie także inną wielkość liter oraz wartości
@@ -649,9 +656,19 @@ jak dotąd; stara implementacja, która pola nie zna, MUSI je zignorować (konsu
 odrzucać ładunku z nieznanym polem). Tak zostało dodane `maxConcurrency` w `Info` (§5.1): runner bez
 niego ma pojemność `1`, czyli tyle, ile dawała dawna reguła jednego zadania naraz.
 
-Wersje nie są ze sobą zgodne. Runner mówiący inną wersją niż serwer dostaje przy uzgadnianiu
-połączenia **426 Upgrade Required** (§3) i nie połączy się w ogóle, dopóki nie zostanie
-zaktualizowany. Podniesienie wersji zawsze oznacza więc aktualizację runnerów.
+Wersje nie są ze sobą zgodne: runner nie mówi dwiema naraz i nie negocjuje niczego w dół — deklaruje
+jedną wersję, a serwer albo ją obsługuje, albo odmawia **426 Upgrade Required** (§3).
+
+Serwer natomiast **MOŻE obsługiwać kilka wersji głównych jednocześnie** i decyduje o tym sam; §3
+wymaga od niego wyłącznie odmowy dla wersji, której nie obsługuje. Dzięki temu podniesienie wersji nie
+musi oznaczać jednoczesnej aktualizacji całej floty: serwer przyjmujący `{2, 3}` obsługuje stare
+runnery bez zmian, a nowych możliwości używają tylko te zaktualizowane. Runner NIE MOŻE jednak na tym
+polegać — nie dowiaduje się, co jeszcze serwer obsługuje, a zakres wsparcia może się zawęzić bez
+uprzedzenia i odciąć runnery mówiące starą wersją.
+
+**v3** rozszerzyło `level` w `Log` (§5.4) z `Info`/`Error` o `Debug`, `Warning` i `Critical`. Zmiana
+jest jednokierunkowa: serwer v3 rozumie wszystko, co wysyła runner v2, ale serwer v2 nie rozumie
+nowych poziomów i odrzuciłby taki wpis — dlatego wersja główna idzie w górę, choć nic nie zniknęło.
 
 ---
 

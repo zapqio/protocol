@@ -91,7 +91,7 @@
       "properties": {
         "jobId": { "type": "string", "format": "uuid" },
         "attemptId": { "type": "string", "format": "uuid", "description": "The attemptId from the dispatch this entry belongs to." },
-        "level": { "enum": ["Info", "Error"] },
+        "level": { "enum": ["Debug", "Info", "Warning", "Error", "Critical"] },
         "message": { "type": "string" },
         "date": { "type": "string", "format": "date-time", "description": "ISO-8601 timestamp with timezone offset." }
       }
