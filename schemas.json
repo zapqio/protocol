@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://zapqio.dev/protocol/v2/schemas.json",
-  "title": "Zapqio Runner Protocol — v2",
+  "$id": "https://zapqio.dev/protocol/v3/schemas.json",
+  "title": "Zapqio Runner Protocol — v3",
   "description": "Schemas for the WebSocket messages exchanged between Zapqio Web (server) and a Runner (client). IMPORTANT: the envelope's `data` field is a STRING containing the JSON-encoded payload (double-encoding). These $defs describe the DECODED payloads; parse `data` as JSON before validating it against the payload schema matching `type`. See PROTOCOL.md.",
   "$defs": {
     "message": {

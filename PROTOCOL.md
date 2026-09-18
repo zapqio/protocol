@@ -96,7 +96,7 @@ W żądaniu upgrade runner MUSI wysłać trzy nagłówki:
 | --- | --- |
 | `X-Zapqio-Token` | Sekretny token runnera, jawnym tekstem. Web weryfikuje go wobec zapisanych skrótów Argon2. |
 | `X-Zapqio-Name`  | Stabilna, samodzielnie nadana nazwa runnera (z konfiguracji/zmiennej środowiskowej). |
-| `X-Zapqio-Protocol-Version` | **Główna** wersja protokołu, którą mówi runner (np. `2`). Brak nagłówka jest traktowany jak `1`, czyli — odkąd serwer mówi `2` — jak wersja nieobsługiwana. |
+| `X-Zapqio-Protocol-Version` | **Główna** wersja protokołu, którą mówi runner (np. `3`). Brak nagłówka jest traktowany jak `1`, czyli — odkąd serwer mówi `2` — jak wersja nieobsługiwana. |
 
 Zachowanie serwera, **w tej właśnie kolejności sprawdzeń**:
 
@@ -406,9 +406,7 @@ Strumieniowane w trakcie wykonywania zadania. Ładunek — `MessageLog`:
 - `jobId`   — zadanie, do którego należy dany wpis logu.
 - `attemptId` — `attemptId` z przydziału tego zadania (§5.2). Wpis z niezgodnym `attemptId` należy do
   próby, którą Web już zamknął, i zostaje odrzucony.
-- `level`   — jeden z `Debug`, `Info`, `Warning`, `Error`, `Critical` (§6). Konsument, który
-  rozróżnia mniej poziomów, MUSI przyjąć wpis mimo to — mapując nieznany poziom na najbliższy
-  znany, a nie odrzucając ładunku.
+- `level`   — jeden z `Debug`, `Info`, `Warning`, `Error`, `Critical` (§6).
 - `message` — treść logu.
 - `date`    — znacznik czasu ISO-8601 z przesunięciem strefy czasowej (§7). Pochodzi z zegara runnera
   i Web zapisuje go bez korekty, więc to ten zegar ustala kolejność wpisów w historii zadania.
@@ -656,15 +654,12 @@ jak dotąd; stara implementacja, która pola nie zna, MUSI je zignorować (konsu
 odrzucać ładunku z nieznanym polem). Tak zostało dodane `maxConcurrency` w `Info` (§5.1): runner bez
 niego ma pojemność `1`, czyli tyle, ile dawała dawna reguła jednego zadania naraz.
 
-Wersje nie są ze sobą zgodne: runner nie mówi dwiema naraz i nie negocjuje niczego w dół — deklaruje
-jedną wersję, a serwer albo ją obsługuje, albo odmawia **426 Upgrade Required** (§3).
-
-Serwer natomiast **MOŻE obsługiwać kilka wersji głównych jednocześnie** i decyduje o tym sam; §3
-wymaga od niego wyłącznie odmowy dla wersji, której nie obsługuje. Dzięki temu podniesienie wersji nie
-musi oznaczać jednoczesnej aktualizacji całej floty: serwer przyjmujący `{2, 3}` obsługuje stare
-runnery bez zmian, a nowych możliwości używają tylko te zaktualizowane. Runner NIE MOŻE jednak na tym
-polegać — nie dowiaduje się, co jeszcze serwer obsługuje, a zakres wsparcia może się zawęzić bez
-uprzedzenia i odciąć runnery mówiące starą wersją.
+Wersje nie są ze sobą zgodne. Runner deklaruje jedną wersję i niczego nie negocjuje w dół; serwer
+mówi jedną wersją — tą z §1 — i każdą inną odrzuca przy uzgadnianiu połączenia odpowiedzią
+**426 Upgrade Required** (§3), z własną wersją w nagłówku odpowiedzi. Runner mówiący inną wersją nie
+połączy się w ogóle, dopóki nie zostanie zaktualizowany. Podniesienie wersji zawsze oznacza więc
+aktualizację wszystkich runnerów — także wtedy, gdy zmiana jest jednokierunkowa i nowy serwer
+rozumiałby wszystko, co stary runner wysyła.
 
 **v3** rozszerzyło `level` w `Log` (§5.4) z `Info`/`Error` o `Debug`, `Warning` i `Critical`. Zmiana
 jest jednokierunkowa: serwer v3 rozumie wszystko, co wysyła runner v2, ale serwer v2 nie rozumie

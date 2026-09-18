@@ -10,7 +10,7 @@ jest z nim zgodny.
 | [`schemas.json`](./schemas.json) | JSON Schema (Draft 2020-12) dla koperty i wszystkich ładunków. |
 | [`fixtures/`](./fixtures/) | Kanoniczne przykładowe wiadomości, używane jako międzyjęzykowe wektory zgodności. |
 
-**Status: wersja robocza v1** — opisowa, odtworzona z referencyjnej implementacji .NET. Wersja
+**Status: v3** — normatywna; obie implementacje .NET (Web i runner) są testowane względem `schemas.json` i `fixtures/`. Wersja
 protokołu jest uzgadniana przy nawiązywaniu połączenia (§3); zob.
 [`PROTOCOL.md` §9](./PROTOCOL.md#9-wersjonowanie-i-zgodność).
 
