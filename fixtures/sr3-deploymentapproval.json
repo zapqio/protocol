@@ -1,0 +1,4 @@
+{
+  "type": "DeploymentApproval",
+  "data": "{\"batchId\":\"11111111-1111-1111-1111-111111111111\",\"packages\":[{\"deploymentId\":\"11111111-1111-1111-1111-111111111111\",\"bundleSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}]}"
+}

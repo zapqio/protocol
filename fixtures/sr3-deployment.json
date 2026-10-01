@@ -1,0 +1,4 @@
+{
+  "type": "Deployment",
+  "data": "{\"deploymentId\":\"11111111-1111-1111-1111-111111111111\",\"repositoryId\":\"11111111-1111-1111-1111-111111111111\",\"sequence\":1,\"status\":\"Pending\",\"bundleUrl\":\"runner/deployments/11111111-1111-1111-1111-111111111111/bundle\",\"bundleSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"bundleBytes\":1000,\"maxBytes\":67108864,\"maxFiles\":2000}"
+}

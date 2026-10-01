@@ -7,16 +7,33 @@
     "message": {
       "title": "Message — the envelope of every frame",
       "type": "object",
-      "required": ["type", "data"],
+      "required": [
+        "type",
+        "data"
+      ],
       "additionalProperties": false,
       "properties": {
         "type": {
           "title": "Message type",
-          "enum": ["Info", "Job", "JobAccepted", "JobReturn", "Log"]
+          "enum": [
+            "Info",
+            "Job",
+            "JobAccepted",
+            "JobReturn",
+            "Log",
+            "Deployment",
+            "DeploymentApproval",
+            "DeploymentApprovalResult",
+            "DeploymentStatus",
+            "DeploymentStatusAck"
+          ]
         },
         "data": {
           "title": "JSON-encoded payload (double-encoded), or null",
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "A JSON document encoded as a string. Decode it, then validate against: Info -> $defs/messageInfo; Job (web->runner) -> $defs/messageJob; JobAccepted -> $defs/messageJobAccepted; JobReturn -> $defs/messageJobReturn; Log -> $defs/messageLog. Null only for a Job poll (runner->web)."
         }
       }
@@ -24,13 +41,34 @@
     "messageInfo": {
       "title": "Info payload (runner->web)",
       "type": "object",
-      "required": ["name", "methods"],
+      "required": [
+        "name",
+        "methods"
+      ],
       "additionalProperties": false,
       "properties": {
-        "name": { "type": "string", "description": "Runner name (same as X-Zapqio-Name)." },
-        "processInstanceId": { "type": "string", "format": "uuid" },
-        "activeAttemptIds": { "type": "array", "items": { "type": "string", "format": "uuid" }, "uniqueItems": true },
-        "methods": { "type": "array", "items": { "$ref": "#/$defs/messageMethod" } },
+        "name": {
+          "type": "string",
+          "description": "Runner name (same as X-Zapqio-Name)."
+        },
+        "processInstanceId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "activeAttemptIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "uniqueItems": true
+        },
+        "methods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/messageMethod"
+          }
+        },
         "maxConcurrency": {
           "type": "integer",
           "minimum": 1,
@@ -41,60 +79,412 @@
     "messageMethod": {
       "title": "A method the runner exposes",
       "type": "object",
-      "required": ["name", "in", "out"],
+      "required": [
+        "name",
+        "in",
+        "out"
+      ],
       "additionalProperties": false,
       "properties": {
-        "name": { "type": "string" },
-        "in": { "type": ["string", "null"], "description": "JSON Schema of the method input, carried as a string. May be null." },
-        "out": { "type": ["string", "null"], "description": "JSON Schema of the method output, carried as a string. May be null." }
+        "name": {
+          "type": "string"
+        },
+        "in": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "JSON Schema of the method input, carried as a string. May be null."
+        },
+        "out": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "JSON Schema of the method output, carried as a string. May be null."
+        }
       }
     },
     "messageJob": {
       "title": "Job dispatch payload (web->runner)",
       "type": "object",
-      "required": ["id", "attemptId", "name", "data"],
+      "required": [
+        "id",
+        "attemptId",
+        "name",
+        "data"
+      ],
       "additionalProperties": false,
       "properties": {
-        "id": { "type": "string", "format": "uuid" },
-        "attemptId": { "type": "string", "format": "uuid", "description": "Identifies THIS dispatch. The same job id may be dispatched several times; attemptId differs each time. Echo it back unchanged in JobAccepted, every Log and JobReturn." },
-        "name": { "type": "string", "description": "Method name to execute (matches a messageMethod.name)." },
-        "data": { "type": ["string", "null"], "description": "Job input as a JSON string (matches the method's `in` schema). May be empty or null." }
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "attemptId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Identifies THIS dispatch. The same job id may be dispatched several times; attemptId differs each time. Echo it back unchanged in JobAccepted, every Log and JobReturn."
+        },
+        "name": {
+          "type": "string",
+          "description": "Method name to execute (matches a messageMethod.name)."
+        },
+        "data": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Job input as a JSON string (matches the method's `in` schema). May be empty or null."
+        }
       }
     },
     "messageJobAccepted": {
       "title": "Dispatch acknowledgement payload (runner->web)",
       "type": "object",
-      "required": ["id", "attemptId"],
+      "required": [
+        "id",
+        "attemptId"
+      ],
       "additionalProperties": false,
       "properties": {
-        "id": { "type": "string", "format": "uuid" },
-        "attemptId": { "type": "string", "format": "uuid", "description": "The attemptId from the dispatch being acknowledged." }
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "attemptId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The attemptId from the dispatch being acknowledged."
+        }
       }
     },
     "messageJobReturn": {
       "title": "Job result payload (runner->web)",
       "type": "object",
-      "required": ["id", "attemptId", "status", "data"],
+      "required": [
+        "id",
+        "attemptId",
+        "status",
+        "data"
+      ],
       "additionalProperties": false,
       "properties": {
-        "id": { "type": "string", "format": "uuid" },
-        "attemptId": { "type": "string", "format": "uuid", "description": "The attemptId from the dispatch this result belongs to." },
-        "status": { "enum": ["OK", "ERROR"] },
-        "data": { "type": ["string", "null"], "description": "On OK: job output as a JSON string (matches the method's `out` schema), which Web feeds to the next pipeline step. On ERROR it SHOULD be null; anything sent is kept on the failed attempt as a diagnostic note and is never passed on." }
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "attemptId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The attemptId from the dispatch this result belongs to."
+        },
+        "status": {
+          "enum": [
+            "OK",
+            "ERROR"
+          ]
+        },
+        "data": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "On OK: job output as a JSON string (matches the method's `out` schema), which Web feeds to the next pipeline step. On ERROR it SHOULD be null; anything sent is kept on the failed attempt as a diagnostic note and is never passed on."
+        },
+        "executionVersion": {
+          "$ref": "#/$defs/executionVersion"
+        }
       }
     },
     "messageLog": {
       "title": "Log payload (runner->web)",
       "type": "object",
-      "required": ["jobId", "attemptId", "level", "message", "date"],
+      "required": [
+        "jobId",
+        "attemptId",
+        "level",
+        "message",
+        "date"
+      ],
       "additionalProperties": false,
       "properties": {
-        "jobId": { "type": "string", "format": "uuid" },
-        "attemptId": { "type": "string", "format": "uuid", "description": "The attemptId from the dispatch this entry belongs to." },
-        "level": { "enum": ["Debug", "Info", "Warning", "Error", "Critical"] },
-        "message": { "type": "string" },
-        "date": { "type": "string", "format": "date-time", "description": "ISO-8601 timestamp with timezone offset." }
+        "jobId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "attemptId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The attemptId from the dispatch this entry belongs to."
+        },
+        "level": {
+          "enum": [
+            "Debug",
+            "Info",
+            "Warning",
+            "Error",
+            "Critical"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "date": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO-8601 timestamp with timezone offset."
+        },
+        "executionVersion": {
+          "$ref": "#/$defs/executionVersion"
+        }
       }
+    },
+    "executionVersion": {
+      "type": "object",
+      "properties": {
+        "repositoryId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "snapshotId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "deploymentId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "repositoryId",
+        "snapshotId",
+        "commit"
+      ],
+      "additionalProperties": false
+    },
+    "deploymentNotice": {
+      "type": "object",
+      "properties": {
+        "deploymentId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "repositoryId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "enum": [
+            "Pending",
+            "AwaitingApproval",
+            "Applied",
+            "Failed",
+            "Rejected",
+            "Superseded"
+          ]
+        },
+        "bundleUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bundleSha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "bundleBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxFiles": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "deploymentId",
+        "repositoryId",
+        "sequence",
+        "status",
+        "bundleUrl",
+        "bundleSha256",
+        "bundleBytes",
+        "maxBytes",
+        "maxFiles"
+      ],
+      "additionalProperties": false
+    },
+    "packageApproval": {
+      "type": "object",
+      "properties": {
+        "deploymentId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "bundleSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "deploymentId",
+        "bundleSha256"
+      ],
+      "additionalProperties": false
+    },
+    "deploymentApproval": {
+      "type": "object",
+      "properties": {
+        "batchId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "packages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/packageApproval"
+          }
+        }
+      },
+      "required": [
+        "batchId",
+        "packages"
+      ],
+      "additionalProperties": false
+    },
+    "deploymentApprovalResult": {
+      "type": "object",
+      "properties": {
+        "batchId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "accepted": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "batchId",
+        "accepted",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "deploymentStatusItem": {
+      "type": "object",
+      "properties": {
+        "deploymentId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "enum": [
+            "AwaitingApproval",
+            "Applied",
+            "Failed",
+            "Rejected",
+            "Superseded"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "deploymentId",
+        "revision",
+        "status",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "deploymentReport": {
+      "type": "object",
+      "properties": {
+        "batchId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/deploymentStatusItem"
+          }
+        }
+      },
+      "required": [
+        "batchId",
+        "items"
+      ],
+      "additionalProperties": false
+    },
+    "deploymentReceipt": {
+      "type": "object",
+      "properties": {
+        "deploymentId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "deploymentId",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "deploymentStatusAck": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/deploymentReceipt"
+          }
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "additionalProperties": false
     }
   }
 }

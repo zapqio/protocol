@@ -1,0 +1,4 @@
+{
+  "type": "DeploymentStatus",
+  "data": "{\"batchId\":\"11111111-1111-1111-1111-111111111111\",\"items\":[{\"deploymentId\":\"11111111-1111-1111-1111-111111111111\",\"revision\":2,\"status\":\"Applied\",\"reason\":null}]}"
+}

@@ -683,6 +683,9 @@ udokumentowanej dla danego fixture'a, oraz jeżeli jej ładunki przechodzą wali
 [`schemas.json`](./schemas.json). Fixture'y i schematy są częścią specyfikacji na równi z tym
 dokumentem — czytaj je z repozytorium, nie przepisuj ich treści do siebie.
 
+Fixture'y `sr3-*.json` opisują wiadomości wdrożeniowe wspólnego protokołu (§11).
+Wdrożenia nie mają osobnej wersji ani deklaracji możliwości w `Info`.
+
 Porównanie jest **semantyczne** (sparsowane struktury są głęboko równe), a **nie bajt w bajt**:
 nieznaczące białe znaki i kolejność kluczy w obiektach nie mają znaczenia. Producenci POWINNI mimo to
 emitować wielkość liter w nazwach pól oraz ciągi wyliczeń dokładnie tak, jak określono, ponieważ nie
@@ -708,3 +711,77 @@ nie jako stan uzgodniony.
 określone tutaj: uzgadnianie połączenia i jego kody odmowy (§3), koperta (§4), zestaw wiadomości i
 ich kierunki (§5) oraz zasady wersjonowania (§9). NIE WOLNO polegać na żadnym zachowaniu serwera
 wykraczającym poza te reguły — nie jest ono obietnicą i może zniknąć bez podniesienia wersji.
+
+## 11. Wdrożenia modułów
+
+Wiadomości wdrożeniowe są częścią wspólnego protokołu runnera i korzystają
+z wersji uzgadnianej przy połączeniu WebSocket (§3, §9). Nie ma osobnej
+wersji ani negocjacji wdrożeń w `Info`. Web wysyła powiadomienia do bieżącej,
+gotowej sesji runnera. Implementacja instalatora .NET działa na Windows.
+Schematy i przykłady: definicje `deployment*` w `schemas.json` i fixtures
+`sr3-*.json`; wspólny kodek .NET znajduje się w `dotnet/`.
+
+| Typ | Kierunek | Znaczenie |
+|---|---|---|
+| `Deployment` | Web → runner | ID wdrożenia/repo, `sequence`, status, względny `bundleUrl`, SHA-256, rozmiar i limity |
+| `DeploymentApproval` | runner → Web | `batchId` i lista dokładnych par `deploymentId` + `bundleSha256` wybranych przez lokalnego administratora |
+| `DeploymentApprovalResult` | Web → runner | `batchId`, `accepted`, opcjonalny powód odmowy |
+| `DeploymentStatus` | runner → Web | opcjonalny `batchId` i lista ID, rosnących `revision`, statusów oraz powodów |
+| `DeploymentStatusAck` | Web → runner | pary ID + revision raportów, które Web utrwalił |
+
+### 11.1. Dostarczenie i kolejność
+
+`sequence` rośnie dla pary runner/repo w kolejności przyjęcia wysyłek przez Web,
+przed przygotowaniem paczki. Późniejsze wysłanie starszego commita jest rollbackiem
+i otrzymuje wyższą sekwencję. Nowa wysyłka zastępuje wyłącznie wcześniejsze
+niezatwierdzone pozycje (`Superseded`). Nie zmienia bajtów już utworzonej paczki.
+Runner utrwala najwyższą sekwencję i nie przywraca starszej pozycji po spóźnionym pobraniu.
+Powiadomienie bez URL może wyprzedzać przygotowanie paczki i unieważnia starszą pozycję.
+
+`bundleUrl` ma postać `runner/deployments/{deploymentId}/bundle`, względem bazowego
+adresu instancji, z zachowaniem PathBase. HTTP używa `X-Zapqio-Token` oraz
+`X-Zapqio-Name` dokładnie jak WebSocket; nazwa jest tożsamością maszyny (`NameRunner`),
+nie nazwą wyświetlaną w panelu. Token uprawnia tylko do własnej paczki. Runner nie
+otrzymuje tokenów repozytorium i nie podąża za przekierowaniem z tego endpointu.
+
+Bundle ZIP zawiera dokładnie `bundle.json` oraz `payload.zip`. Manifest v1 utrwala
+tożsamość wdrożenia/repo/migawki, commit, sekwencję, packageName, autora/wiadomość,
+akcję, rodzaj zawartości, rozmiar/hash payloadu i listę plików z rozmiarami/hashami.
+Rodzaje: `DotnetSource` (jeden projekt w korzeniu) i `DotnetModuleZip` (`##Dll`,
+opcjonalnie `##Shared`). `Withdraw` ma pusty payload i pustą listę plików.
+Hashe są SHA-256 zapisanymi małymi znakami hex. Limity dotyczą każdej warstwy ZIP,
+również po rozpakowaniu; metadata ma dodatkowy limit 4 MiB. Zabronione są traversal,
+dowiązania, kolizje nazw niezależne od wielkości liter oraz specjalne ścieżki Windows.
+Samo pobranie/walidacja nie uruchamia MSBuild, restore, programu ani DLL.
+
+### 11.2. Akceptacja online i restart
+
+Po sprawdzeniu całej paczki runner zapisuje `AwaitingApproval`. Komenda lokalnego
+administratora zamraża listę ID/hash i żąda zgody Weba. Web atomowo sprawdza, czy
+każda pozycja nadal jest najnowsza, należy do tego runnera i czeka na zgodę; dopiero
+po trwałym zapisie całej partii odsyła `accepted: true`. Nieaktualna lista jest
+odrzucana, bez automatycznego zatwierdzania jej nowszego następcy. Ponowienie tego
+samego batchId i zestawu jest idempotentne; inny zestaw nie może użyć tego ID.
+
+Runner NIE MOŻE instalować ani restartować z powodu wdrożenia przed otrzymaniem ACK
+zgody. Brak odpowiedzi pozostawia trwałe żądanie do ponowienia. Po ACK restart
+przerywa zadania bez oczekiwania na ich koniec. Następny proces przygotowuje cały
+zestaw, zapisuje kopie wycofania i dziennik, podmienia pliki i ładuje moduły.
+Nowe zadania oraz `Info` czekają na zakończenie tej operacji. Sukces oznacza `Applied`
+całej partii. Błąd oznacza przywrócenie poprzedniego zestawu i `Failed` całej partii;
+po próbie załadowania DLL wymagany jest świeży proces. Przywrócenie plików nie cofa
+skutków ubocznych kodu. Nowsze dostawy po zgodzie tworzą osobną poczekalnię.
+
+### 11.3. Raporty i wersja wykonania
+
+Raporty są trwale ponawiane do otrzymania dokładnego ACK ID/revision, także po
+reconnect i restarcie. Końcowy raport partii zawiera wszystkich jej członków i jeden
+wynik (`Applied` albo `Failed`). Web nie zapisuje częściowego sukcesu. Niższa lub
+powtórzona rewizja nie zmienia już przyjętego stanu. Stare sesje nie mogą raportować.
+Żadna wiadomość SR3 nie jest potwierdzeniem odbioru `JobReturn`.
+
+`Log` startowy i `JobReturn` mogą zawierać `executionVersion`:
+`{repositoryId, snapshotId, commit, deploymentId}`. Runner przypisuje te dane raz,
+do konkretnej metody wybranej przy rozpoczęciu próby, i zachowuje przy replay wyniku.
+Paczka oczekująca nie zmienia tej wartości. Ręczne/starsze moduły pomijają pole.
+Web weryfikuje właściciela wdrożenia i próby oraz nie nadpisuje zapisanej wersji próby.
