@@ -29,7 +29,7 @@ Kompletna implementacja runnera to trzy warstwy, ale **tylko pierwsza przekracza
    assembly **nie jest przenośny**; moduły są specyficzne dla języka.
 
 Wzmianki o **runnerze referencyjnym** w dalszych sekcjach dotyczą implementacji .NET z
-[`github.com/zapqio/runner-dotnet`](https://github.com/zapqio/runner-dotnet) — jedynego działającego
+[`github.com/zapqio/dotnet-runner`](https://github.com/zapqio/dotnet-runner) — jedynego działającego
 przykładu klienta tego protokołu. Jest ona **jedną** z implementacji, a nie definicją protokołu:
 źródłem prawdy jest ten dokument wraz z [`schemas.json`](./schemas.json) i
 [`fixtures/`](./fixtures/) (§10).
