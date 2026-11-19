@@ -18,12 +18,17 @@ Międzyjęzykowy test zgodności POWINIEN dla każdego fixture'a:
 Wszystkie fixture'y należą do jednego spójnego przykładu: runner `build-agent-01`, metoda
 `resize-image`, zadanie `a1b2c3d4-e5f6-7890-abcd-ef1234567890` wysłane jako próba
 `7f3e9c21-4b8a-4d15-9e62-0c5a7b1d8f34`. Ten sam `attemptId` przewija się przez przydział,
-potwierdzenie, wszystkie cztery logi i oba warianty wyniku — dokładnie tak, jak wymaga tego §5.2.
+potwierdzenie, wszystkie cztery logi i oba warianty wyniku, zgodnie z §5.2.
+Proces ma UUID `8dbe4462-6baf-4a07-91f6-8aa2753a27e1`; oba `Info` ogłaszają pustą listę aktywnych
+prób. Heartbeat i ACK mają identyczny UUID i numer `1` z tej samej sesji. W testach stanu drugi
+puls używa numeru `2` i dociera co najmniej 10 s po pierwszym.
 
 | Fixture | Kier. | Znaczenie po zdekodowaniu |
 | --- | --- | --- |
 | `info.json` | R→W | Runner ogłasza nazwę `build-agent-01`, jedną metodę `resize-image` ze schematem JSON wejścia (`width`, `height`) oraz wyjścia (`url`) i pojemność `maxConcurrency=4` (cztery zadania naraz). |
-| `info-sequential.json` | R→W | To samo `Info` **bez** `maxConcurrency` — tak wysyła runner sprzed tego pola albo runner wykonujący jedno zadanie naraz. Konsument MUSI odczytać je jako pojemność `1`. |
+| `info-sequential.json` | R→W | To samo `Info` **bez** opcjonalnego `maxConcurrency`, ale z wymaganymi w v4 `processInstanceId` i `activeAttemptIds`. Konsument MUSI odczytać je jako pojemność `1`. |
+| `heartbeat.json` | R→W | Puls procesu `8dbe…`, numer `1` w bieżącej sesji. |
+| `heartbeat-ack.json` | W→R | Potwierdzenie tego samego procesu i numeru `1`. Nie potwierdza zadań ani ich wyników. |
 | `job-poll.json` | R→W | Odpytanie: `type=Job`, `data=null` („przyślij mi pracę”). |
 | `job-dispatch.json` | W→R | Przydział zadania `a1b2…` jako próba `7f3e…` → metoda `resize-image`, wejście `{ "width": 800, "height": 600 }`. |
 | `job-accepted.json` | R→W | Potwierdzenie odbioru przydziału `a1b2…` / `7f3e…`. |
@@ -36,3 +41,8 @@ potwierdzenie, wszystkie cztery logi i oba warianty wyniku — dokładnie tak, j
 
 Dekodowanie `job-dispatch.json` krok po kroku jest rozpisane w
 [`../PROTOCOL.md` §8](../PROTOCOL.md#8-przykład-krok-po-kroku--bajty-na-łączu).
+
+Walidacja v4 odrzuca heartbeat/ACK bez procesu lub numeru, z zerowym UUID, numerem `0`,
+ujemnym, ułamkowym, tekstowym lub większym niż `9007199254740991`, a także `data=null`.
+Numer powtórzony, obcy proces, ACK niewysłanego numeru i stara sesja wymagają osobnych testów
+przepływu: pojedynczy poprawny JSON nie dowodzi zgodności zachowania z §5.7–5.9.

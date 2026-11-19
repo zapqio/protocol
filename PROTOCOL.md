@@ -7,8 +7,12 @@ Każdy runner — w dowolnym języku — który jest zgodny z tym dokumentem, mo
 
 ## 1. Przegląd
 
-To jest **v3** protokołu — wersja główna, którą runner deklaruje przy uzgadnianiu połączenia (§3), a
+To jest **v4** protokołu, wersja główna, którą runner deklaruje przy uzgadnianiu połączenia (§3), a
 której zasady podnoszenia opisuje §9.
+
+**Status wdrożenia:** kontrakt v4 jest przygotowany do implementacji. Samo zaktualizowanie tego
+repozytorium nie włącza v4 w Web ani w runnerach. Przejście wymaga skoordynowanej aktualizacji Web,
+runnera wewnętrznego i runnerów zewnętrznych. Wersja v3 nie spełnia wymagań heartbeat opisanych niżej.
 
 **Runner** jest **klientem** WebSocket. **Web** jest **serwerem** WebSocket. Runner nawiązuje
 połączenie, uwierzytelnia się nagłówkami HTTP, ogłasza metody, które potrafi wykonać, a następnie
@@ -37,10 +41,12 @@ przykładu klienta tego protokołu. Jest ona **jedną** z implementacji, a nie d
 
 | Nadawca | Odbiorca | Komunikat / Akcja | Szczegóły i zachowanie serwera |
 |---|---|---|---|
-| **Runner** | **Web** | Nawiązanie połączenia (`GET /ws-runner`) | Przesyła nagłówki: `X-Zapqio-Token`, `X-Zapqio-Name`, `X-Zapqio-Protocol-Version`. Zwraca kod `101` (lub odmowę `400`/`401`/`426`/`429` — §3). |
-| **Runner** | **Web** | `Info` (metody + nazwa) | Serwer rejestruje u siebie przesłane metody. |
-| **Web** | **Runner** | `Job` (przydział) | Serwer aktywnie wypycha nowe zadanie do wykonania. Trzyma u runnera najwyżej **jedno** nierozstrzygnięte zadanie naraz (§5.2). |
-| **Runner** | **Web** | `JobAccepted` (potwierdzenie) | „Mam to zadanie i je wykonam". Bez potwierdzenia w terminie serwer zwraca zadanie do kolejki. |
+| **Runner** | **Web** | Nawiązanie połączenia (`GET /ws-runner`) | Przesyła nagłówki: `X-Zapqio-Token`, `X-Zapqio-Name`, `X-Zapqio-Protocol-Version`, `X-Zapqio-Process-Instance`. Zwraca kod `101` (lub odmowę `400`/`401`/`426`/`429`, §3). |
+| **Runner** | **Web** | `Info` (metody, proces i aktywne próby) | Serwer uzgadnia każdą nową sesję i odtwarza zajęte sloty (§5.1). |
+| **Runner** | **Web** | `Heartbeat` | Puls bieżącego procesu i sesji, co 10 s (§5.7). |
+| **Web** | **Runner** | `HeartbeatAck` | Potwierdzenie dokładnego numeru pulsu (§5.8). |
+| **Web** | **Runner** | `Job` (przydział) | Serwer aktywnie wypycha nowe zadanie do wykonania. Przydziela wyłącznie gotowej sesji, do ogłoszonej pojemności (§5.2, §5.9). |
+| **Runner** | **Web** | `JobAccepted` (potwierdzenie) | „Mam to zadanie i je wykonam”. Termin potwierdzenia jest odrębny od timeoutu sesji (§5.3). |
 | **Runner** | **Web** | `Log ... Log ...` | Strumieniowanie logów na żywo w trakcie wykonywania zadania. |
 | **Runner** | **Web** | `JobReturn` (OK/ERROR + wynik) | Serwer zapisuje wynik i podaje go do kolejnego kroku. |
 | **Runner** | **Web** | `Job` (odpytanie, `data=null`) | Klient zgłasza gotowość komunikatem „daj mi więcej pracy”. Gdy nic nie czeka, serwer **nie odsyła nic**. |
@@ -81,22 +87,22 @@ przykładu klienta tego protokołu. Jest ona **jedną** z implementacji, a nie d
   uprzejme: gdy ten sam runner łączy się ponownie, serwer **przerywa** poprzednie gniazdo bez ramki
   Close, więc odczyt, który po prostu rzuca, też jest normalnym końcem sesji, a nie usterką.
 - Brak kompresji i grupowania (batching) na poziomie aplikacji.
-- **Brak pulsu na poziomie aplikacji.** Protokół nie ma wiadomości utrzymującej łączność, a serwer nie
-  rozłącza runnera za bezczynność — połączenie, na którym nic się nie dzieje, jest połączeniem
-  zdrowym. Nie buduj własnego pulsu z wiadomości opisanych w §5; do wykrywania martwych połączeń
-  służą mechanizmy samego WebSocketa (ping/pong, limity czasu gniazda).
+- **Obowiązkowy puls na poziomie aplikacji.** `Heartbeat` i `HeartbeatAck` (§5.7–5.9) działają
+  niezależnie od wykonywania metod, logowania, odpytywania o zadania i wdrożeń. WebSocket ping/pong
+  oraz otwarte gniazdo nie zastępują tego mechanizmu i nie potwierdzają gotowości do pracy.
 
 ---
 
 ## 3. Uzgadnianie połączenia i uwierzytelnianie
 
-W żądaniu upgrade runner MUSI wysłać trzy nagłówki:
+W żądaniu upgrade runner MUSI wysłać cztery nagłówki:
 
 | Nagłówek | Znaczenie |
 | --- | --- |
 | `X-Zapqio-Token` | Sekretny token runnera, jawnym tekstem. Web weryfikuje go wobec zapisanych skrótów Argon2. |
 | `X-Zapqio-Name`  | Stabilna, samodzielnie nadana nazwa runnera (z konfiguracji/zmiennej środowiskowej). |
-| `X-Zapqio-Protocol-Version` | **Główna** wersja protokołu, którą mówi runner (np. `3`). Brak nagłówka jest traktowany jak `1`, czyli — odkąd serwer mówi `2` — jak wersja nieobsługiwana. |
+| `X-Zapqio-Protocol-Version` | **Główna** wersja protokołu, którą mówi runner (w tej wersji `4`). Brak nagłówka jest traktowany jak `1`, czyli wersja nieobsługiwana. |
+| `X-Zapqio-Process-Instance` | Niezerowy UUID utworzony raz przy starcie procesu runnera. Pozostaje ten sam przy reconnectach tego procesu, zmienia się po jego restarcie. |
 
 Zachowanie serwera, **w tej właśnie kolejności sprawdzeń**:
 
@@ -113,7 +119,9 @@ Zachowanie serwera, **w tej właśnie kolejności sprawdzeń**:
 - Token niepasujący do **żadnego** runnera → HTTP **401**.
 - **Powiązanie nazwy:** przy pierwszym połączeniu Web wiąże `X-Zapqio-Name` z rekordem runnera. Przy
   kolejnych połączeniach nazwa MUSI być równa nazwie powiązanej, w przeciwnym razie → HTTP **401**.
-- W pozostałych przypadkach → **101 Switching Protocols**.
+- Brak, niepoprawny UUID albo zerowy UUID w `X-Zapqio-Process-Instance` → HTTP **400**.
+- W pozostałych przypadkach → **101 Switching Protocols**. Każde takie połączenie otrzymuje po stronie
+  Web nową lokalną tożsamość sesji (`ConnectionId`), odrębną od tożsamości procesu.
 
 Kolejność nie jest przypadkowa. Negocjacja wersji wypada przed wyszukaniem tokenu, więc runner
 mówiący niewspieraną wersją zostaje odprawiony, zanim Web sięgnie po dane runnerów; ograniczenie
@@ -134,7 +142,9 @@ flowchart TD
     D -- "nie" --> R401
     D -- "tak" --> E{"Nazwa zgodna z powiązaną?"}
     E -- "nie" --> R401
-    E -- "tak lub pierwsze połączenie (wiąże nazwę)" --> OK["101 Switching Protocols"]
+    E -- "tak lub pierwsze połączenie (wiąże nazwę)" --> P{"Poprawny niezerowy Process-Instance?"}
+    P -- "nie" --> R400
+    P -- "tak" --> OK["101 Switching Protocols"]
 ```
 
 Uwagi:
@@ -175,8 +185,8 @@ Każda wiadomość WebSocket to dokładnie taki obiekt:
 { "type": "Job", "data": "…" }
 ```
 
-- **`type`** *(string, wymagane)* — typ wiadomości: jeden z `Info`, `Job`, `JobAccepted`, `JobReturn`,
-  `Log`. Dokładna wielkość liter w §6.
+- **`type`** *(string, wymagane)*: typ wiadomości z pełnego zestawu w §6, w tym `Heartbeat`
+  i `HeartbeatAck`. Wiadomości wdrożeniowe opisuje §11.
 - **`data`** *(string lub null, wymagane)* — ładunek dla danego typu, **zakodowany jako JSON w
   postaci ciągu znaków**. Obiekt ładunku jest serializowany do JSON, a ten *tekst* JSON trafia do
   `data` jako wartość tekstowa. `null` wyłącznie dla [odpytania Job](#52-job).
@@ -207,6 +217,8 @@ metody, które udostępnia. Ładunek — `MessageInfo`:
 ```json
 {
   "name": "build-agent-01",
+  "processInstanceId": "8dbe4462-6baf-4a07-91f6-8aa2753a27e1",
+  "activeAttemptIds": [],
   "methods": [
     { "name": "resize-image", "in": "{\"type\":\"object\", … }", "out": "{\"type\":\"object\", … }" }
   ],
@@ -214,7 +226,14 @@ metody, które udostępnia. Ładunek — `MessageInfo`:
 }
 ```
 
-- `name` — nazwa runnera (ta sama wartość co `X-Zapqio-Name`).
+- `name`: nazwa runnera (ta sama wartość co `X-Zapqio-Name`).
+- `processInstanceId`: wymagany niezerowy UUID, identyczny jak w `X-Zapqio-Process-Instance` tej
+  sesji. Niezgodne `Info` nie uzgadnia sesji ani nie pozwala przyjmować jej heartbeat.
+- `activeAttemptIds`: wymagana tablica unikalnych UUID prób posiadanych przez ten proces:
+  przyjętych i oczekujących, wykonywanych oraz zakończonych z wynikiem oczekującym na wysłanie.
+  Brak takich prób oznacza `[]`, a nie `null` lub pominięcie pola. Lista służy do uzgodnienia
+  z zapisami Web i odtworzenia zajętych slotów. Nie uprawnia do przejęcia prób innego runnera,
+  cofnięcia nowej próby ani ponownego wykonania zakończonej pracy.
 - `methods` — tablica obiektów `MessageMethod`:
   - `name` — nazwa metody; zadania są do niej kierowane po tej nazwie.
   - `in`  — **JSON Schema** opisujący **wejście** metody, przenoszony *jako ciąg znaków*, albo `null`.
@@ -238,16 +257,14 @@ dośle `Info` z jedną metodą, traci po stronie Web wszystkie pozostałe, a **p
 czyści zestaw do zera. Wysyłaj więc zawsze **komplet** metod udostępnianych w danej chwili. `methods`
 MUSI być tablicą — runner ogłaszający brak metod przysyła `[]`, nie `null`.
 
-**Wyślij `Info` ponownie, gdy zestaw metod się zmieni** — inaczej Web nie wie o nowych metodach, a do
-usuniętych wciąż kieruje zadania. Reguła dotyczy implementacji, w których zestaw metod potrafi się
-zmienić **w trakcie życia procesu**. Runner referencyjny do nich nie należy: moduły wczytuje raz, przy
-starcie, więc ich podmiana wymaga restartu — a restart wysyła `Info` sam z siebie. Dlatego wystarcza
-mu jedno `Info` na proces.
+**Wyślij pełne `Info` po każdym połączeniu**, także po reconnect tego samego procesu. Web MUSI
+uzgodnić bieżący proces i aktywne próby, zanim zacznie potwierdzać heartbeat i przydzielać pracę.
+Metody zapisane w bazie oraz stan poprzedniej sesji nie wystarczają do uznania nowej sesji za gotową.
 
-Zapisane metody i pojemność **przeżywają rozłączenie**, więc samo wznowienie połączenia nie wymaga
-powtarzania `Info`; kierowanie zadań działa dalej na tym, co Web ma zapisane w rekordzie runnera.
-Runner, który zmienia pojemność (np. po zmianie konfiguracji), ogłasza ją nowym `Info` — u runnera
-referencyjnego zmiana konfiguracji wymaga restartu, więc dzieje się to samo z siebie.
+**Wyślij `Info` ponownie, gdy zestaw metod lub pojemność się zmieni.** Aktualizacja w tej samej
+sesji zachowuje `processInstanceId`, zawiera aktualną migawkę prób i nie zeruje liczników heartbeat
+ani nie odnawia terminów sesji. `Info` nie jest pulsem; sama aktualizacja metod nie wymaga dwóch
+nowych pulsów, jeżeli sesja nadal spełnia warunki gotowości.
 
 `name` w ładunku jest **informacyjne**. O tożsamości rozstrzyga uzgadnianie połączenia (§3) i to
 nazwa stamtąd wiąże się z rekordem runnera; Web nie porównuje z nią wartości przysłanej w `Info` ani
@@ -295,7 +312,8 @@ jej nie zapisuje.
 > obiektu `MessageJob`, a `MessageJob.data` jest *znowu* ciągiem znaków zawierającym JSON wejścia
 > zadania. To dwa poziomy kodowania tekstowego ponad samą ramką.
 
-**Rozruch i kadencja.** Po `Info` runner czeka na odbiorze; **pierwsze** zadanie przychodzi z
+**Rozruch i kadencja.** Po `Info` runner rozpoczyna heartbeat i stale odbiera wiadomości.
+Przydziały wymagają gotowości z §5.9. Zadania przychodzą także z
 dyspozytora działającego w tle po stronie Web, który rusza 30 s po starcie Web, a potem budzi się przy
 każdym zdarzeniu dającym nowe zadanie (uruchomienie, wynik, ponowienie, powrót do kolejki) i nie
 rzadziej niż co ok. 10 s. Runner wykonuje naraz najwyżej tyle zadań, ile zadeklarował w
@@ -305,7 +323,9 @@ rzadziej niż co ok. 10 s. Runner wykonuje naraz najwyżej tyle zadań, ile zade
 Runner POWINIEN wysłać odpytanie **od razu po `Info`** i po każdym ponownym połączeniu, gdy ma wolne
 miejsce, nie czekając na dyspozytora — odpytanie znaczy tylko „mam wolne miejsce". Bez tego pierwsze
 zadanie po starcie Web czeka do ok. 40 s (30 s rozruchu plus tyknięcie), co przy krótkim pipelinie
-wygląda jak awaria. Runner referencyjny tak robi.
+wygląda jak awaria. Odpytanie przed uzyskaniem gotowości nie powoduje przydziału i nie odświeża
+heartbeat. Przy przejściu do gotowości Web POWINIEN obudzić dyspozytor, aby wcześniejsze odpytanie
+nie zgubiło sygnału o wolnym miejscu.
 
 **Pojemność, czyli ile przydziałów naraz.** Web trzyma u runnera **najwyżej `maxConcurrency`
 nierozstrzygniętych zadań**: zadanie jest nierozstrzygnięte od wysłania przydziału, aż skończy się
@@ -333,10 +353,12 @@ trakcie wdrożenia, pojemność zmieniła się w locie albo doszło do wyścigu 
 zakolejkować u siebie i wykonać, gdy zwolni się miejsce. Odrzucony przydział przepada: nic go nie
 wyśle ponownie przed upływem terminu.
 
-**Koniec sesji kasuje tę kolejkę.** Zadania, które u runnera czekają nierozpoczęte, są po stronie Web
-w stanie *Dispatched* — po zniknięciu połączenia wracają do kolejki i zostaną wysłane ponownie.
-Runner MUSI je zatem **porzucić** wraz z sesją; przeniesienie ich przez ponowne połączenie wykonałoby
-je **drugi raz**. Odzyskiwaniem przydziałów zarządza Web, nie runner.
+**Utrata sesji nie rozstrzyga wyniku pracy.** Runner zachowuje stan przyjętych prób na czas
+reconnect tego samego procesu i zgłasza go w `Info.activeAttemptIds`. Nie tworzy nowych prób ani
+nie wykonuje ponownie rozpoczętej metody z powodu braku heartbeat. Web uzgadnia próby i zajęte
+sloty przed kolejnym przydziałem. `JobAccepted` oznacza przyjęcie pracy również wtedy, gdy jeszcze
+nie dotarł log startowy. Samego rozłączenia ani braku logu NIE WOLNO uznać za dowód niewykonania.
+Spóźniony wynik podlega nadal regułom `attemptId` z §5.5.
 
 **Przydział może wskazywać metodę, której runner nie ogłosił.** Web nie gwarantuje, że `name` jest
 jedną z nazw z ostatniego `Info`: krok pipeline'u mógł powstać, zanim runner cokolwiek ogłosił, albo
@@ -372,8 +394,11 @@ którą Web już zamknął. Wysłanie `JobAccepted` po wznowieniu połączenia n
 tak samo jak spóźniony `Log` (§5.4) i spóźniony `JobReturn` (§5.5).
 
 **Termin.** Zadanie, które pozostaje w stanie *Dispatched* bez potwierdzenia dłużej niż **60 s**,
-Web uznaje za niedostarczone i zwraca do kolejki (*Waiting*). Nic się nie wykonało, więc ponowna
-wysyłka jest bezpieczna.
+Web zwraca do kolejki (*Waiting*) zgodnie z odrębną polityką braku potwierdzenia. Dotyczy to
+wyłącznie próby bez zapisanego `JobAccepted` i bez rozpoczęcia. Nie jest to dowód niewykonania:
+samo potwierdzenie mogło zginąć. Ponowna wysyłka nadal wymaga ochrony skutków ubocznych po `id`
+(§5.2). Timeout heartbeat nie skraca tego terminu i nie uprawnia do ponowienia próby
+zaakceptowanej lub rozpoczętej.
 
 Termin obowiązuje **niezależnie od stanu połączenia**. To jest jego cała racja bytu: przydział ginie
 także wtedy, gdy gniazdo pozostaje otwarte — bo wysyłka utknęła, bo runner nie doszedł do odbioru,
@@ -383,11 +408,10 @@ wyłapuje i zostawały one w *Dispatched* bezterminowo, blokując resztę swojeg
 > Sama wartość terminu jest ustawieniem serwera i MOŻE się zmienić; runner nie ma prawa na niej
 > polegać. Jedyne, co go obowiązuje, to wysłać potwierdzenie od razu.
 
-**To jedyny termin, jaki narzuca serwer.** Na **czas wykonania** metody nie ma żadnego limitu po
-stronie Web: zadanie, które ruszyło (§5.4) i którego runner pozostaje połączony, może stać w
-*Executing* dowolnie długo — nic go nie zamknie ani nie zakolejkuje ponownie. Limit czasu metody jest
-więc w całości odpowiedzialnością runnera, a jego brak objawia się jako uruchomienie pipeline'u,
-które nigdy się nie kończy.
+**Terminy mają różne znaczenie.** Termin `JobAccepted` dotyczy przyjęcia konkretnego przydziału,
+timeout heartbeat dotyczy dostępności sesji (§5.9), a limit czasu kroku dotyczy wykonania metody.
+Długa metoda może działać bez logów, utrzymując heartbeat. Utrata sesji lub przekroczenie limitu
+kroku nie dowodzą braku skutków ubocznych i nie uprawniają do automatycznego powtórzenia pracy.
 
 ### 5.4 Log (R→W)
 
@@ -412,19 +436,17 @@ Strumieniowane w trakcie wykonywania zadania. Ładunek — `MessageLog`:
   i Web zapisuje go bez korekty, więc to ten zegar ustala kolejność wpisów w historii zadania.
 
 **Pierwszy** `Log` dla zadania przełącza je po stronie serwera ze stanu *Dispatched* na *Executing*.
-To przejście decyduje o tym, jak odzyskiwane jest zadanie utracone: jeśli runner rozłączy się bez
-wysłania `JobReturn`, zadanie wciąż w stanie *Dispatched* uznaje się za nierozpoczęte i wraca ono do
-kolejki, natomiast zadanie już w *Executing* przechodzi w stan *OutcomeUnknown* („wynik nieznany")
-zamiast wrócić do kolejki — jego efekt uboczny mógł już nastąpić, a Web nie wie, czy nastąpił. Taki
-krok ponawia dopiero człowiek, świadomie potwierdzając, że skutek może się powtórzyć (w ten sam stan
-Web wprowadza też zadanie, które trwa dłużej niż limit czasu kroku ustawiony na potoku - liczony od
-tego pierwszego `Log`; runner nie jest o tym powiadamiany i może dokończyć pracę); do tego czasu
-Web wciąż przyjmie `JobReturn` **tej samej próby**, jeśli runner wróci z wynikiem (§5.5).
+Po utracie runnera Web uwzględnia również `JobAccepted` i uzgodnione próby. Zaakceptowana próba
+bez pierwszego logu może już mieć skutki uboczne. Brak heartbeat NIE MOŻE automatycznie zwrócić
+zaakceptowanej lub rozpoczętej próby do kolejki. Po upływie karencji liczonej od utraty dostępności
+wynik takiej próby pozostaje nieznany (*OutcomeUnknown*), dopóki nie zostanie uzgodniony albo
+rozstrzygnięty. Do tego czasu Web przyjmuje poprawny `JobReturn` tej samej próby (§5.5).
+Limit czasu kroku pozostaje odrębnym ustawieniem platformy.
 
 Runner MUSI zatem wysłać wiersz startowy `Log` **przed** wywołaniem metody i MUSI wysłać go
-natychmiast, z pominięciem swojego bufora logów. Runner, który buforuje wiersz startowy, może wykonać
-efekt uboczny i ulec awarii przed kolejnym opróżnieniem kolejki; zadanie zostanie wtedy w stanie
-*Dispatched*, a Web wykona je po raz drugi.
+natychmiast, z pominięciem swojego bufora logów. Buforowanie wiersza startowego utrudnia
+rozróżnienie pracy oczekującej i rozpoczętej. Nawet przy braku tego logu zapisane `JobAccepted`
+musi chronić próbę przed automatycznym ponowieniem po utracie sesji.
 
 Runner referencyjny daje metodzie dwa sposoby na wpis. Pierwszy działa bez żadnego API: `stdout`
 metody trafia na `Info`, a `stderr` na `Error`. Drugi pozwala nazwać poziom wprost i dopiero on
@@ -503,8 +525,8 @@ stateDiagram-v2
     [*] --> Waiting
     Waiting --> Dispatched: Web wypycha Job (dyspozytor co ok. 10 s albo odpowiedź na odpytanie)
     Dispatched --> Executing: pierwszy Log dla zadania
-    Dispatched --> Waiting: runner rozłączony / nierozpoczęte, wraca do kolejki
-    Dispatched --> Waiting: brak JobAccepted w terminie 60 s
+    Dispatched --> OutcomeUnknown: utrata runnera po JobAccepted, po karencji
+    Dispatched --> Waiting: brak JobAccepted i rozpoczęcia w terminie 60 s
     Executing --> OutcomeUnknown: runner rozłączony po starcie / efekt uboczny mógł już nastąpić
     Executing --> Ok: JobReturn ze status OK
     Executing --> Error: JobReturn ze status ERROR
@@ -525,8 +547,8 @@ stateDiagram-v2
     note right of Dispatched
         JobAccepted nie zmienia stanu - odnotowuje
         tylko, że przydział dotarł. Bez niego termin
-        zwraca zadanie do kolejki, także wtedy, gdy
-        gniazdo runnera jest otwarte.
+        jest odrębny od timeoutu sesji. Utrata heartbeat
+        nie dowodzi niewykonania pracy.
 
         Okno przyjęcia wyniku to Dispatched LUB Executing,
         więc runner, który pominął log startowy, kończy
@@ -564,10 +586,16 @@ sequenceDiagram
     participant R as Runner (klient WS)
     participant W as Web (serwer WS)
 
-    R->>W: GET /ws-runner<br/>X-Zapqio-Token, X-Zapqio-Name, X-Zapqio-Protocol-Version
+    R->>W: GET /ws-runner<br/>Token, Name, Protocol-Version: 4, Process-Instance: P
     W-->>R: 101 Switching Protocols
-    R->>W: Info { name, methods[] }
-    Note over W: Web zapisuje metody runnera
+    R->>W: Info { name, processInstanceId: P, activeAttemptIds[], methods[] }
+    Note over W: Web uzgadnia sesję i zajęte sloty
+    R->>W: Heartbeat { processInstanceId: P, sequence: 1 }
+    W->>R: HeartbeatAck { processInstanceId: P, sequence: 1 }
+    Note over R,W: kolejne pulsy co 10 s, przez cały czas sesji
+    R->>W: Heartbeat { processInstanceId: P, sequence: 2 }
+    Note over W: gotowość po dwóch pulsach odebranych w odstępie co najmniej 10 s
+    W->>R: HeartbeatAck { processInstanceId: P, sequence: 2 }
 
     W->>R: Job { id: J, attemptId: A, name: resize-image, data }
     activate R
@@ -591,6 +619,121 @@ wyniku.
 
 ---
 
+### 5.7 Heartbeat (R→W)
+
+Obowiązkowy sygnał dostępności bieżącej sesji. Ładunek (`messageHeartbeat` w schemacie):
+
+```json
+{
+  "processInstanceId": "8dbe4462-6baf-4a07-91f6-8aa2753a27e1",
+  "sequence": 1
+}
+```
+
+- `processInstanceId`: niezerowy UUID procesu, zgodny z nagłówkiem uzgodnienia oraz przyjętym
+  `Info`. Nie jest sekretem ani samodzielnym uwierzytelnieniem.
+- `sequence`: dodatnia liczba całkowita od `1` do `9007199254740991` (zakres dokładnych liczb
+  całkowitych JSON także dla implementacji JavaScript). Pierwszy wysłany puls nowego połączenia
+  ma `1`; każdy kolejny zwiększa numer o jeden. Nowe połączenie zaczyna od `1`, również gdy
+  proces zachował ten sam UUID. Przed przepełnieniem runner nawiązuje nową sesję.
+
+Runner MUSI wysłać pierwszy puls bez zbędnej zwłoki po wysłaniu pełnego `Info`, a kolejne co **10 s**.
+Nie czeka na `HeartbeatAck`, aby zaplanować następny puls. Pętla odbioru działa równolegle i nie
+czeka na wykonanie metody. Brak zadań, pełne sloty i brak logów nie zatrzymują pulsów.
+
+Web przyjmuje puls wyłącznie z uwierzytelnionego, aktualnego połączenia, po uzgodnieniu `Info`
+i odtworzeniu zajętych slotów. Sprawdza zgodność procesu i numer większy niż ostatni przyjęty numer
+tej sesji. Duplikat, starszy numer, niepoprawny ładunek lub puls z innej sesji NIE odświeżają czasu
+i NIE otrzymują potwierdzenia. Puls sprzed zakończenia uzgadniania można pominąć; późniejszy wyższy
+numer pozwala rozpocząć obserwację. Odbiorca nie wymaga ciągłości przyjętych numerów.
+
+`LastHeartbeatReceivedAt` oznacza lokalny czas odbioru poprawnego pulsu przez Web. Żaden czas
+runnera nie bierze udziału w ocenie świeżości, dlatego ładunek nie zawiera znacznika czasu.
+`Info`, `Job`, `Log`, `JobReturn`, wiadomości wdrożeniowe, wysyłka i otwarcie gniazda nie zastępują
+pulsu. Web obsługuje puls i potwierdzenie bez oczekiwania na długie operacje domenowe oraz bez
+obowiązku zapisywania każdego pulsu w bazie.
+
+### 5.8 HeartbeatAck (W→R)
+
+Potwierdzenie każdego przyjętego `Heartbeat`, wysyłane niezwłocznie tym samym połączeniem.
+Ładunek (`messageHeartbeatAck`) ma te same pola i dokładnie te same wartości co potwierdzany puls:
+
+```json
+{
+  "processInstanceId": "8dbe4462-6baf-4a07-91f6-8aa2753a27e1",
+  "sequence": 1
+}
+```
+
+Runner uznaje potwierdzenie tylko wtedy, gdy dotarło przez jego aktualną sesję, dotyczy tego procesu
+i numeru faktycznie wysłanego w tej sesji, większego od ostatniego przyjętego potwierdzenia.
+Potwierdzenie niewysłanego numeru, duplikat, niższy numer lub wiadomość starego połączenia nie
+odświeżają czasu ostatniego ACK. WebSocket zachowuje kolejność; ACK wyższego numeru pozwala usunąć
+lokalne oczekiwania na niższe numery. Numer niewysłany, ale tylko zaplanowany lub zakolejkowany,
+nie jest podstawą do przyjęcia ACK.
+
+ACK potwierdza odbiór pulsu po uzgodnieniu `Info`. Nie jest potwierdzeniem `JobAccepted`, logu,
+wyniku, zapisu wszystkich danych w bazie ani wolnego slotu. Pierwszy ACK nie dowodzi jeszcze
+gotowości do przydzielania zadań. Tę gotowość ocenia Web zgodnie z §5.9.
+
+### 5.9 Sesja, gotowość i utrata dostępności
+
+Parametry v4 są wspólne dla Web, runnera zewnętrznego i wewnętrznego:
+
+| Parametr | Reguła |
+| --- | --- |
+| Odstęp pulsów | 10 s, od pierwszego pulsu po wysłaniu `Info`. |
+| Timeout | 45 s bez poprawnego pulsu po stronie Web lub poprawnego ACK po stronie runnera. |
+| Początek timeoutu bez pierwszego sygnału | Chwila zakończenia upgrade `101` po każdej stronie. Wysłanie `Info` nie przesuwa terminu. |
+| Pierwsza gotowość | Web ma najwyżej 45 s od `101` na uzgodnienie `Info`, odtworzenie slotów i uzyskanie dwóch pulsów. |
+| Stabilna gotowość | Co najmniej dwa poprawne pulsy aktualnej sesji, odebrane przez Web w odstępie co najmniej 10 s, oraz świeży ostatni puls. |
+| Ocena timeoutu | Najrzadziej co 5 s oraz bezpośrednio przed przyjęciem pulsu/ACK i każdym przydziałem. |
+| Termin wysyłki | Całe oczekiwanie na wspólną bramkę i wysłanie pulsu lub ACK musi mieć skończony limit, krótszy niż timeout 45 s. |
+
+Stan początkowy to `Connecting` (lub `Unknown`, gdy nie ma sesji). Otwarcie gniazda nie uprawnia
+do przydziałów. Po spełnieniu warunków Web przechodzi do `Online`. Przy reconnect po utracie
+dostępności nowa sesja pozostaje `Recovering` do ponownego spełnienia tych samych warunków.
+Przyjęte pulsy nie mogą przedłużać w nieskończoność 45-sekundowego terminu pierwszej gotowości.
+Pełne sloty oznaczają zajętość, a nie `Offline`.
+
+Web porównuje czas ostatniego pulsu ze swoim zegarem monotonicznym; runner tak samo ocenia czas
+ostatniego ACK. Dla działającego procesu implementacja .NET może użyć `TimeProvider`.
+UTC służy do prezentacji i audytu, a nie do obliczania odstępów. Skok zegara systemowego nie może
+ani przedłużyć ważności sesji, ani przedwcześnie jej zakończyć.
+
+Przy `elapsed >= 45 s` sesja jest nieważna, nawet gdy jej gniazdo nadal ma stan `Open`.
+Spóźniony puls lub ACK nie może jej ożywić, także gdy timer jeszcze nie wykonał następnego obrotu.
+Web oznacza ją jako `Offline`, natychmiast blokuje nowe przydziały i przerywa transport.
+Runner po swoim timeoutcie przerywa transport i ponawia połączenie z opóźnieniem zgodnie z §3.
+Monitor wykrywa timeout najpóźniej po dodatkowych 5 s; kontrola przed przydziałem musi działać
+niezależnie od monitora. Błąd lub przekroczenie limitu wysyłki kończą tę sesję, a nie zawieszają
+pętli bez końca. Nie wolno uruchamiać jednoczesnych wysyłek z pominięciem ochrony transportu.
+
+`OfflineSince` dla timeoutu to czas ostatniego poprawnego pulsu plus 45 s. Dla jawnego
+rozłączenia obowiązuje wcześniejszy czas. Jeżeli nie uzyskano jeszcze pierwszej gotowości,
+obowiązuje wcześniejszy z terminu pulsu i terminu startowego `101 + 45 s`. Bez pierwszego pulsu
+obowiązuje termin startowy. Samo odłączenie nie zmienia czasu ostatniego
+pulsu. Opóźniony obrót monitora nie przesuwa początku niedostępności na czas jej wykrycia.
+
+Każdy odbiór, aktualizacja, wysyłka, callback zamknięcia i timeout MUSZĄ być związane z lokalną
+tożsamością konkretnego połączenia (`ConnectionId` w Web i odpowiednik po stronie runnera).
+Sam `processInstanceId` i numer pulsu nie wystarczają, ponieważ po reconnect tego samego procesu
+numery zaczynają się od nowa. Stara sesja nie może odświeżyć, zamknąć ani oznaczyć jako offline
+swojej następczyni. Tożsamość połączenia nie jest dodatkowym polem wiadomości: wynika z transportu.
+Pulsów i ACK nie utrwala się do późniejszego replay i nie przenosi przez reconnect.
+
+Web stosuje jedną ocenę sesji w dyspozytorze, odpytaniu `Job` i rezerwacji. Bezpośrednio przed
+wysyłką zadania ponownie sprawdza aktualną tożsamość sesji, gotowość i świeżość pulsu.
+Utrata sesji nie oznacza zakończenia procesu ani niewykonania pracy. Nie pozwala automatycznie
+powtórzyć zaakceptowanej lub rozpoczętej próby; obowiązuje uzgadnianie i odbiór spóźnionego wyniku
+zgodnie z §5.1–5.5. Karencja utraty runnera zaczyna się od `OfflineSince` i jest odrębna od terminu
+`JobAccepted` oraz limitu czasu kroku.
+
+Próg alarmu, odbiorcy powiadomień i okno odtworzenia obserwacji po restarcie Web są polityką
+platformy poza formatem protokołu. Wyłączenie alarmów nie wyłącza heartbeat ani kontroli przydziałów.
+
+---
+
 ## 6. Wyliczenia (dokładne wartości na łączu)
 
 Wyliczenia są serializowane jako ich **dokładne nazwy** — implementacja referencyjna używa konwertera
@@ -599,7 +742,7 @@ literami, a NIE w camelCase**. Producenci MUSZĄ emitować dokładnie te ciągi:
 
 | Pole | Dozwolone wartości |
 | --- | --- |
-| `type` wiadomości  | `Info`, `Job`, `JobAccepted`, `JobReturn`, `Log` |
+| `type` wiadomości  | `Info`, `Job`, `JobAccepted`, `JobReturn`, `Log`, `Heartbeat`, `HeartbeatAck`, `Deployment`, `DeploymentApproval`, `DeploymentApprovalResult`, `DeploymentStatus`, `DeploymentStatusAck` |
 | `level` w Log      | `Debug`, `Info`, `Warning`, `Error`, `Critical` |
 | `status` w JobReturn | `OK`, `ERROR` |
 
@@ -613,8 +756,9 @@ liczb całkowitych.
 
 | Typ logiczny | Format na łączu | Przykład |
 | --- | --- | --- |
-| uuid (`id`, `jobId`, `attemptId`) | kanoniczny UUID z myślnikami, małymi literami | `"a1b2c3d4-e5f6-7890-abcd-ef1234567890"` |
+| uuid (`id`, `jobId`, `attemptId`, `processInstanceId`) | kanoniczny UUID z myślnikami, małymi literami | `"a1b2c3d4-e5f6-7890-abcd-ef1234567890"` |
 | nazwa runnera i metody (`name`) | zwykły ciąg znaków, porównywany **dokładnie** — z uwzględnieniem wielkości liter i znaków wiodących | `"resize-image"` ≠ `"Resize-Image"` |
+| numer pulsu (`sequence` w heartbeat/ACK) | liczba całkowita od `1` do `9007199254740991`, nie ciąg znaków | `1` |
 | znacznik czasu (`date`) | ISO-8601 z przesunięciem strefy czasowej; ułamki sekund opcjonalne | `"2026-06-12T14:30:00.123+00:00"` |
 | JSON Schema (`in`, `out`) | dokument JSON Schema przenoszony **jako ciąg znaków** | `"{\"type\":\"object\", … }"` |
 | wejście/wyjście zadania (`data` w `MessageJob`/`MessageJobReturn`) | nieprzezroczysty JSON przenoszony **jako ciąg znaków** albo `null` (§5.2, §5.5); kształt definiowany per metoda przez `in`/`out`, a nie przez ten protokół | `"{\"width\":800}"` |
@@ -661,6 +805,13 @@ połączy się w ogóle, dopóki nie zostanie zaktualizowany. Podniesienie wersj
 aktualizację wszystkich runnerów — także wtedy, gdy zmiana jest jednokierunkowa i nowy serwer
 rozumiałby wszystko, co stary runner wysyła.
 
+**v4** wprowadza wymagane `Heartbeat` i `HeartbeatAck` (§5.7–5.9), limit świeżości sesji,
+bramkę gotowości przed przydziałem oraz pełne `Info` na każdym połączeniu. Nagłówek
+`X-Zapqio-Process-Instance` i pola `Info.processInstanceId` oraz `Info.activeAttemptIds` są wymagane.
+To zmiana łamiąca zgodność zachowania: runner v3 nie wysyła pulsu, a Web v3 nie odsyła ACK.
+Nie wolno włączyć v4 tylko przez zmianę deklarowanej liczby bez implementacji tych reguł.
+Próby zgodności v4 muszą objąć oba runnery oraz Web przed skoordynowanym wdrożeniem.
+
 **v3** rozszerzyło `level` w `Log` (§5.4) z `Info`/`Error` o `Debug`, `Warning` i `Critical`. Zmiana
 jest jednokierunkowa: serwer v3 rozumie wszystko, co wysyła runner v2, ale serwer v2 nie rozumie
 nowych poziomów i odrzuciłby taki wpis — dlatego wersja główna idzie w górę, choć nic nie zniknęło.
@@ -674,7 +825,8 @@ w tym dokumencie użyte w rozumieniu RFC 2119 i odpowiadają angielskim MUST, MU
 Różnica jest tu istotna: od reguły zapisanej przez POWINIEN wolno świadomie odstąpić, a reguła
 zapisana przez MUSI albo NIE WOLNO jest warunkiem zgodności.
 
-Zgodność ma **dwie połowy** i tylko pierwszą da się sprawdzić maszynowo.
+Zgodność obejmuje **format na łączu** oraz **zachowanie sesji**. Schematy sprawdzają pierwszy
+obszar; drugi wymaga testów przepływu z kontrolowanym czasem i transportem oraz przeglądu kodu.
 
 **Łącze.** Implementacja jest zgodna, jeżeli potrafi zarówno **wyprodukować**, jak i **skonsumować**
 każdy fixture z katalogu [`fixtures/`](./fixtures/) w taki sposób, że po pełnym zdekodowaniu (ramka →
@@ -693,8 +845,13 @@ każdy konsument jest pobłażliwy.
 
 **Zachowanie.** Żaden fixture ani schemat nie dowodzi, że implementacja przestrzega reguł przepływu —
 a bez nich zadania giną albo wykonują się dwa razy, mimo że każda pojedyncza ramka jest poprawna.
-Zgodność wymaga zatem także tych reguł, sprawdzalnych wyłącznie przeglądem kodu:
+Zgodność wymaga zatem również następujących reguł:
 
+- puls i ACK podczas bezczynności, długiej metody bez logów oraz pełnego obciążenia (§5.7–5.9);
+- odrzucenie powtórzonych i niewysłanych numerów ACK, obcego procesu oraz callbacków starej sesji;
+- timeout dokładnie na granicy 45 s, startup bez gotowości, brak ożywienia wygasłej sesji;
+- przerwanie blokady wysyłki, jednostronna utrata ruchu i reconnect bez replay pulsu;
+- brak przydziałów przed dwoma pulsami oraz uzgodnieniem aktywnych prób;
 - uzgadnianie połączenia i reakcja na jego kody odmowy, w tym wycofywanie się po `429` (§3);
 - potwierdzanie przydziału natychmiast po odebraniu i dotrzymanie terminu (§5.3), **także gdy
   wszystkie miejsca pracują** — odbiór i potwierdzanie nie mogą czekać na wolne miejsce (§5.2);

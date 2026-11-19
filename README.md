@@ -10,8 +10,11 @@ jest z nim zgodny.
 | [`schemas.json`](./schemas.json) | JSON Schema (Draft 2020-12) dla koperty i wszystkich ładunków. |
 | [`fixtures/`](./fixtures/) | Kanoniczne przykładowe wiadomości, używane jako międzyjęzykowe wektory zgodności. |
 
-**Status: v3** — normatywna; obie implementacje .NET (Web i runner) są testowane względem `schemas.json` i `fixtures/`. Wersja
-protokołu jest uzgadniana przy nawiązywaniu połączenia (§3); zob.
+**Status: v4, kontrakt przygotowany do implementacji.** Dodaje obowiązkowy heartbeat i jego
+potwierdzenie, gotowość sesji oraz uzgadnianie procesu i aktywnych prób po każdym połączeniu.
+Web i oba runnery wymagają dostosowania oraz wspólnego odbioru przed wdrożeniem. Aktualizacja
+tego repozytorium sama nie zmienia wersji działających aplikacji. Wersja protokołu jest
+uzgadniana przy nawiązywaniu połączenia (§3); zob.
 [`PROTOCOL.md` §9](./PROTOCOL.md#9-wersjonowanie-i-zgodność).
 
 Protokół to zwykły JSON po WebSockecie, więc da się go zaimplementować w dowolnym języku. Zwróć

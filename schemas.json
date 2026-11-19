@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://zapqio.dev/protocol/v3/schemas.json",
-  "title": "Zapqio Runner Protocol — v3",
+  "$id": "https://zapqio.dev/protocol/v4/schemas.json",
+  "title": "Zapqio Runner Protocol v4",
   "description": "Schemas for the WebSocket messages exchanged between Zapqio Web (server) and a Runner (client). IMPORTANT: the envelope's `data` field is a STRING containing the JSON-encoded payload (double-encoding). These $defs describe the DECODED payloads; parse `data` as JSON before validating it against the payload schema matching `type`. See PROTOCOL.md.",
   "$defs": {
     "message": {
-      "title": "Message — the envelope of every frame",
+      "title": "Message: the envelope of every frame",
       "type": "object",
       "required": [
         "type",
@@ -25,7 +25,9 @@
             "DeploymentApproval",
             "DeploymentApprovalResult",
             "DeploymentStatus",
-            "DeploymentStatusAck"
+            "DeploymentStatusAck",
+            "Heartbeat",
+            "HeartbeatAck"
           ]
         },
         "data": {
@@ -34,16 +36,40 @@
             "string",
             "null"
           ],
-          "description": "A JSON document encoded as a string. Decode it, then validate against: Info -> $defs/messageInfo; Job (web->runner) -> $defs/messageJob; JobAccepted -> $defs/messageJobAccepted; JobReturn -> $defs/messageJobReturn; Log -> $defs/messageLog. Null only for a Job poll (runner->web)."
+          "description": "A JSON document encoded as a string. Decode it, then validate against: Info -> $defs/messageInfo; Job (web->runner) -> $defs/messageJob; JobAccepted -> $defs/messageJobAccepted; JobReturn -> $defs/messageJobReturn; Log -> $defs/messageLog. Null only for a Job poll (runner->web). Heartbeat -> $defs/messageHeartbeat; HeartbeatAck -> $defs/messageHeartbeatAck."
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "Heartbeat",
+                  "HeartbeatAck"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
     },
     "messageInfo": {
       "title": "Info payload (runner->web)",
       "type": "object",
       "required": [
         "name",
-        "methods"
+        "methods",
+        "processInstanceId",
+        "activeAttemptIds"
       ],
       "additionalProperties": false,
       "properties": {
@@ -53,7 +79,11 @@
         },
         "processInstanceId": {
           "type": "string",
-          "format": "uuid"
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "description": "Nonzero process UUID, identical to the current connection's X-Zapqio-Process-Instance header and Info. Stable across reconnects, new after process restart."
         },
         "activeAttemptIds": {
           "type": "array",
@@ -61,7 +91,8 @@
             "type": "string",
             "format": "uuid"
           },
-          "uniqueItems": true
+          "uniqueItems": true,
+          "description": "All attempts held by this process, including accepted, running and completed with a pending result. Required, empty array when none. Reconciled after each connection before readiness."
         },
         "methods": {
           "type": "array",
@@ -485,6 +516,56 @@
         "items"
       ],
       "additionalProperties": false
+    },
+    "messageHeartbeat": {
+      "title": "Heartbeat payload (runner->web)",
+      "type": "object",
+      "required": [
+        "processInstanceId",
+        "sequence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "processInstanceId": {
+          "type": "string",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "description": "Nonzero process UUID, identical to the current connection's X-Zapqio-Process-Instance header and Info. Stable across reconnects, new after process restart."
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "Increasing number scoped to this WebSocket connection, starting at 1. The ACK echoes the exact number sent by the runner."
+        }
+      }
+    },
+    "messageHeartbeatAck": {
+      "title": "Heartbeat acknowledgement payload (web->runner)",
+      "type": "object",
+      "required": [
+        "processInstanceId",
+        "sequence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "processInstanceId": {
+          "type": "string",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "description": "Nonzero process UUID, identical to the current connection's X-Zapqio-Process-Instance header and Info. Stable across reconnects, new after process restart."
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "Increasing number scoped to this WebSocket connection, starting at 1. The ACK echoes the exact number sent by the runner."
+        }
+      }
     }
   }
 }
